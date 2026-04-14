@@ -96,6 +96,23 @@ export interface WikiRunResult {
 const DEFAULT_MAX_TOKENS_PER_MODULE = 30_000;
 const WIKI_DIR = 'wiki';
 
+/**
+ * Clean LLM response content by removing reasoning/thinking tags.
+ * Handles both <thinking>...</thinking> and similar patterns that MiniMax models use.
+ */
+function cleanLLMContent(content: string): string {
+  // Remove <think...>...</think...> tags (handles <thinking>, <think>, etc.)
+  let cleaned = content.replace(/<think[\s\S]*?>[\s\S]*?<\/think[\s\S]*?>/gi, '');
+
+  // Also remove content between Chinese full-width brackets if present
+  cleaned = cleaned.replace(/【 thinking 】[\s\S]*?【\/ thinking 】/gi, '');
+
+  // Remove any leading/trailing whitespace and multiple blank lines
+  cleaned = cleaned.replace(/^\s*\n\s*\n/, '\n').trim();
+
+  return cleaned;
+}
+
 // ─── Generator Class ──────────────────────────────────────────────────
 
 export class WikiGenerator {
@@ -109,6 +126,7 @@ export class WikiGenerator {
   private options: WikiOptions;
   private onProgress: ProgressCallback;
   private failedModules: string[] = [];
+  private requiredModules: Array<{ name: string; paths?: string[] }> = [];
 
   constructor(
     repoPath: string,
@@ -273,6 +291,43 @@ export class WikiGenerator {
 
     // Filter to source files only
     const sourceFiles = allFiles.filter((f) => !shouldIgnorePath(f));
+
+    // Load RepoIgnoreFiles and RequiredModules from .gitnexus/meta.json
+    let repoIgnorePatterns: string[] = [];
+    let requiredModules: Array<{ name: string; paths?: string[] }> = [];
+    try {
+      const metaPath = path.join(this.repoPath, '.gitnexus', 'meta.json');
+      const metaContent = await fs.readFile(metaPath, 'utf-8');
+      const meta = JSON.parse(metaContent);
+      repoIgnorePatterns = meta.RepoIgnoreFiles || [];
+      requiredModules = meta.RequiredModules || [];
+
+      if (repoIgnorePatterns.length > 0) {
+        this.onProgress('gather', 6, `Filtering ${repoIgnorePatterns.length} ignore patterns...`);
+        const beforeCount = sourceFiles.length;
+        const filteredFiles = sourceFiles.filter((f) => {
+          for (const pattern of repoIgnorePatterns) {
+            try {
+              const regex = new RegExp(pattern);
+              if (regex.test(f)) {
+                return false;
+              }
+            } catch {
+              // Invalid regex, skip
+            }
+          }
+          return true;
+        });
+        sourceFiles.length = 0;
+        sourceFiles.push(...filteredFiles);
+      }
+    } catch {
+      // No meta.json or no fields, ignore
+    }
+
+    // Store for later use
+    this.requiredModules = requiredModules;
+
     if (sourceFiles.length === 0) {
       throw new Error('No source files found in the knowledge graph. Nothing to document.');
     }
@@ -286,7 +341,13 @@ export class WikiGenerator {
     this.onProgress('gather', 10, `Found ${sourceFiles.length} source files`);
 
     // Phase 1: Build module tree
-    const moduleTree = await this.buildModuleTree(enrichedFiles);
+    let moduleTree = await this.buildModuleTree(enrichedFiles);
+
+    // Phase 1.5: Add required modules if specified
+    if (this.requiredModules.length > 0) {
+      moduleTree = this.ensureRequiredModules(moduleTree, enrichedFiles);
+    }
+
     pagesGenerated = 0;
 
     // If reviewOnly mode, save tree and stop for user to review/edit
@@ -332,6 +393,7 @@ export class WikiGenerator {
         return 1;
       } catch (err: any) {
         this.failedModules.push(node.name);
+        console.error(`[ERROR] Failed leaf module "${node.name}":`, err.message);
         reportProgress(`Failed: ${node.name}`);
         return 0;
       }
@@ -350,6 +412,7 @@ export class WikiGenerator {
         reportProgress(node.name);
       } catch (err: any) {
         this.failedModules.push(node.name);
+        console.error(`[ERROR] Failed parent module "${node.name}":`, err.message);
         reportProgress(`Failed: ${node.name}`);
       }
     }
@@ -406,20 +469,152 @@ export class WikiGenerator {
 
     this.onProgress('grouping', 15, 'Grouping files into modules (LLM)...');
 
-    const fileList = formatFileListForGrouping(files);
-    const dirTree = formatDirectoryTree(files.map((f) => f.filePath));
+    // Get file sizes directly from filesystem to batch by cumulative size
+    // Target ~800KB of source code per batch (~80K tokens for prompt, leaving room for response)
+    const TARGET_BATCH_SIZE_BYTES = 500 * 1024; // 500KB ~125K tokens for English
+    const sizeMap = new Map<string, number>();
 
-    const prompt = fillTemplate(GROUPING_USER_PROMPT, {
-      FILE_LIST: fileList,
-      DIRECTORY_TREE: dirTree,
-    });
+    // Fetch file sizes in parallel (limit concurrency to avoid overwhelming the filesystem)
+    const fetchSize = async (filePath: string): Promise<[string, number]> => {
+      try {
+        const stats = await fs.stat(path.join(this.repoPath, filePath));
+        return [filePath, stats.size];
+      } catch {
+        return [filePath, 1024]; // Default 1KB if can't stat
+      }
+    };
 
-    const response = await this.invokeLLM(
-      prompt,
-      GROUPING_SYSTEM_PROMPT,
-      this.streamOpts('Grouping files', 15, 13),
-    );
-    const grouping = this.parseGroupingResponse(response.content, files);
+    const sizeResults = await Promise.all(files.map((f) => fetchSize(f.filePath)));
+    for (const [fp, size] of sizeResults) {
+      sizeMap.set(fp, size);
+    }
+
+    // Add size to each file
+    const filesWithSize = files.map((f) => ({
+      ...f,
+      size: sizeMap.get(f.filePath) || 1024,
+    }));
+
+    // Build batches by cumulative size
+    type FileWithSize = FileWithExports & { size: number };
+    const batches: FileWithSize[][] = [];
+    let currentBatch: FileWithSize[] = [];
+    let currentSize = 0;
+
+    for (const file of filesWithSize) {
+      // If adding this file would exceed the limit and batch is not empty, start new batch
+      if (currentSize + file.size > TARGET_BATCH_SIZE_BYTES && currentBatch.length > 0) {
+        batches.push(currentBatch);
+        currentBatch = [];
+        currentSize = 0;
+      }
+      currentBatch.push(file);
+      currentSize += file.size;
+    }
+    // Don't forget the last batch
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+    }
+
+    const allGroupings: Record<string, string[]> = {};
+    const totalBatches = batches.length;
+
+    // Track last DB touch time to prevent timeout during long batch processing
+    let lastDbTouch = Date.now();
+    const DB_TOUCH_INTERVAL = 60_000;
+
+    // Process each batch
+    for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+      const batchFiles = batches[batchIdx];
+      const batchTotalSize = batchFiles.reduce((sum, f) => sum + f.size, 0);
+
+      const fileList = formatFileListForGrouping(batchFiles);
+      const dirTree = formatDirectoryTree(batchFiles.map((f) => f.filePath));
+
+      this.onProgress(
+        'grouping',
+        15 + Math.floor(((batchIdx + 1) / totalBatches) * 10),
+        `Grouping files (batch ${batchIdx + 1}/${totalBatches}, ${batchFiles.length} files, ${Math.round(batchTotalSize / 1024)}KB)...`,
+      );
+
+      const prompt = fillTemplate(GROUPING_USER_PROMPT, {
+        FILE_LIST: fileList,
+        DIRECTORY_TREE: dirTree,
+      });
+
+      // For grouping, use a silent stream that doesn't update the progress bar
+      // to keep the overall batch progress clean
+      let response;
+      try {
+        response = await this.invokeLLM(
+          prompt,
+          GROUPING_SYSTEM_PROMPT,
+          undefined, // No streaming for grouping to avoid progress bar flickering
+        );
+      } catch (err: any) {
+        console.error(`[ERROR] Batch ${batchIdx + 1}/${totalBatches} failed:`);
+        console.error(`  - Files: ${batchFiles.length}, Size: ${Math.round(batchTotalSize / 1024)}KB`);
+        console.error(`  - First file: ${batchFiles[0]?.filePath}`);
+        console.error(`  - Last file: ${batchFiles[batchFiles.length - 1]?.filePath}`);
+        console.error(`  - Error: ${err.message || err}`);
+        throw err;
+      }
+
+      // Touch DB every 60s to prevent idle timeout during long batch processing
+      const now = Date.now();
+      if (now - lastDbTouch > DB_TOUCH_INTERVAL) {
+        touchWikiDb();
+        lastDbTouch = now;
+      }
+      const batchGrouping = this.parseGroupingResponse(response.content, batchFiles);
+
+      // Merge batch grouping into overall result
+      for (const [moduleName, modulePaths] of Object.entries(batchGrouping)) {
+        if (!allGroupings[moduleName]) {
+          allGroupings[moduleName] = [];
+        }
+        allGroupings[moduleName].push(...modulePaths);
+      }
+    }
+
+    const grouping = allGroupings;
+
+    // Fallback: Check for unassigned files and add by top-level directory
+    const assignedFiles = new Set<string>();
+    for (const paths of Object.values(grouping)) {
+      for (const p of paths) {
+        assignedFiles.add(p);
+      }
+    }
+
+    const unassignedFiles = files.filter((f) => !assignedFiles.has(f.filePath));
+    if (unassignedFiles.length > 0) {
+      this.onProgress(
+        'grouping',
+        25,
+        `LLM missed ${unassignedFiles.length} files, adding by directory...`,
+      );
+
+      // Group unassigned files by top-level directory
+      const dirGroups: Record<string, string[]> = {};
+      for (const file of unassignedFiles) {
+        const parts = file.filePath.replace(/\\/g, '/').split('/');
+        const topDir = parts[0] || 'root';
+        if (!dirGroups[topDir]) {
+          dirGroups[topDir] = [];
+        }
+        dirGroups[topDir].push(file.filePath);
+      }
+
+      // Merge into grouping
+      for (const [dir, paths] of Object.entries(dirGroups)) {
+        const moduleName = `Other (${dir})`;
+        if (!grouping[moduleName]) {
+          grouping[moduleName] = [];
+        }
+        grouping[moduleName].push(...paths);
+      }
+    }
 
     // Convert to tree nodes
     const tree: ModuleTreeNode[] = [];
@@ -441,6 +636,72 @@ export class WikiGenerator {
       }
 
       tree.push(node);
+    }
+
+    // Fallback: If too few modules (less than 1/5 of files), split large modules by directory
+    const MIN_MODULES_RATIO = 5; // At least 1 module per 5 files
+    if (tree.length < files.length / MIN_MODULES_RATIO && files.length > 50) {
+      this.onProgress(
+        'grouping',
+        27,
+        `Only ${tree.length} modules for ${files.length} files, splitting by directory...`,
+      );
+
+      // Step 1: Split modules with >10 files into subdirectories
+      let splitTree: ModuleTreeNode[] = [];
+      for (const node of tree) {
+        touchWikiDb();
+        if (node.files.length > 10) {
+          const subdirs = this.splitBySubdirectory(node.name, node.files);
+          if (subdirs.length > 1) {
+            splitTree.push({
+              name: node.name,
+              slug: node.slug,
+              files: [],
+              children: subdirs,
+            });
+            continue;
+          }
+        }
+        splitTree.push(node);
+      }
+
+      // Step 2: Loop to split any children with >500 files (max 3 iterations)
+      for (let iter = 0; iter < 3; iter++) {
+        touchWikiDb();
+        let hasLargeChild = false;
+        const afterSplit: ModuleTreeNode[] = [];
+
+        for (const node of splitTree) {
+          if (node.children && node.children.length > 0) {
+            const newChildren: ModuleTreeNode[] = [];
+            for (const child of node.children) {
+              if (child.files.length > 500) {
+                const subdirs = this.splitBySubdirectory(child.name, child.files);
+                if (subdirs.length > 1) {
+                  hasLargeChild = true;
+                  newChildren.push(...subdirs);
+                } else {
+                  newChildren.push(child);
+                }
+              } else {
+                newChildren.push(child);
+              }
+            }
+            afterSplit.push({ ...node, children: newChildren });
+          } else {
+            afterSplit.push(node);
+          }
+        }
+
+        if (!hasLargeChild) break;
+        splitTree = afterSplit;
+      }
+
+      if (splitTree.length > tree.length) {
+        tree.length = 0;
+        tree.push(...splitTree);
+      }
     }
 
     // Save immutable snapshot for resumability
@@ -523,6 +784,95 @@ export class WikiGenerator {
   }
 
   /**
+   * Group files by top-level directory to preserve directory context.
+   * Files without a clear top-level directory go into "root" group.
+   */
+  private groupByTopLevelDirectory(files: FileWithExports[]): Record<string, FileWithExports[]> {
+    const groups: Record<string, FileWithExports[]> = {};
+
+    for (const file of files) {
+      const parts = file.filePath.replace(/\\/g, '/').split('/');
+      // Top-level is the first directory (e.g., "packages", "src", "tools")
+      // or "root" for files in the repo root
+      let topLevel = parts.length > 1 ? parts[0] : 'root';
+
+      // Normalize common variations
+      if (topLevel === 'packages' && parts.length > 2) {
+        // For monorepos, use second level as top-level (e.g., "packages/featurepack")
+        topLevel = parts.slice(0, 2).join('/');
+      }
+
+      if (!groups[topLevel]) {
+        groups[topLevel] = [];
+      }
+      groups[topLevel].push(file);
+    }
+
+    return groups;
+  }
+
+  /**
+   * Ensure required modules exist in the tree, create if missing.
+   */
+  private ensureRequiredModules(
+    tree: ModuleTreeNode[],
+    allFiles: FileWithExports[],
+  ): ModuleTreeNode[] {
+    const newTree = [...tree];
+
+    for (const required of this.requiredModules) {
+      // Touch DB to prevent timeout
+      touchWikiDb();
+
+      const moduleName = required.name;
+      const slug = this.slugify(moduleName);
+
+      // Check if module already exists
+      const exists = newTree.some(
+        (n) => n.slug === slug || n.name.toLowerCase().includes(moduleName.toLowerCase()),
+      );
+
+      if (exists) {
+        continue;
+      }
+
+      // Find matching files
+      let matchedFiles: string[] = [];
+
+      if (required.paths && required.paths.length > 0) {
+        // Use specified paths
+        for (const pattern of required.paths) {
+          const regex = new RegExp(pattern);
+          for (const file of allFiles) {
+            if (regex.test(file.filePath) && !matchedFiles.includes(file.filePath)) {
+              matchedFiles.push(file.filePath);
+            }
+          }
+        }
+      } else {
+        // Auto-detect: search for files containing the module name
+        const keyword = moduleName.toLowerCase();
+        for (const file of allFiles) {
+          if (file.filePath.toLowerCase().includes(keyword)) {
+            matchedFiles.push(file.filePath);
+          }
+        }
+      }
+
+      // Create module if we found matching files
+      if (matchedFiles.length > 0) {
+        newTree.push({
+          name: moduleName,
+          slug,
+          files: matchedFiles,
+        });
+      }
+    }
+
+    return newTree;
+  }
+
+  /**
    * Split a large module into sub-modules by subdirectory.
    * Uses the full subDir path for naming to avoid slug collisions
    * (e.g., "synapse-screen/src" vs "synapse-core/src").
@@ -572,7 +922,8 @@ export class WikiGenerator {
       finalSourceCode = this.truncateSource(sourceCode, this.maxTokensPerModule);
     }
 
-    // Get graph data
+    // Get graph data - touch DB before to prevent timeout
+    touchWikiDb();
     const [intraCalls, interCalls, processes] = await Promise.all([
       getIntraModuleCallEdges(filePaths),
       getInterModuleCallEdges(filePaths),
@@ -590,8 +941,9 @@ export class WikiGenerator {
 
     const response = await this.invokeLLM(prompt, MODULE_SYSTEM_PROMPT, this.streamOpts(node.name));
 
-    // Write page with front matter
-    const pageContent = `# ${node.name}\n\n${response.content}`;
+    // Clean the content and write page
+    const cleanedContent = cleanLLMContent(response.content);
+    const pageContent = `# ${node.name}\n\n${cleanedContent}`;
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
   }
 
@@ -631,13 +983,17 @@ export class WikiGenerator {
 
     const response = await this.invokeLLM(prompt, PARENT_SYSTEM_PROMPT, this.streamOpts(node.name));
 
-    const pageContent = `# ${node.name}\n\n${response.content}`;
+    const cleanedContent = cleanLLMContent(response.content);
+    const pageContent = `# ${node.name}\n\n${cleanedContent}`;
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
   }
 
   // ─── Phase 3: Generate Overview ─────────────────────────────────────
 
   private async generateOverview(moduleTree: ModuleTreeNode[]): Promise<void> {
+    // Touch DB before starting to prevent timeout
+    touchWikiDb();
+
     // Read module overview sections
     const moduleSummaries: string[] = [];
     for (const node of moduleTree) {
@@ -654,10 +1010,12 @@ export class WikiGenerator {
     }
 
     // Get inter-module edges for architecture diagram
+    touchWikiDb();
     const moduleFiles = this.extractModuleFiles(moduleTree);
     const moduleEdges = await getInterModuleEdgesForOverview(moduleFiles);
 
     // Get top processes for key workflows
+    touchWikiDb();
     const topProcesses = await getAllProcesses(5);
 
     // Read project config
@@ -681,7 +1039,8 @@ export class WikiGenerator {
       this.streamOpts('Generating overview', 88),
     );
 
-    const pageContent = `# ${path.basename(this.repoPath)} — Wiki\n\n${response.content}`;
+    const cleanedContent = cleanLLMContent(response.content);
+    const pageContent = `# ${path.basename(this.repoPath)} — Wiki\n\n${cleanedContent}`;
     await fs.writeFile(path.join(this.wikiDir, 'overview.md'), pageContent, 'utf-8');
   }
 

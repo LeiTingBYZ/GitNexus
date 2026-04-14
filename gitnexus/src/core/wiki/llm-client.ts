@@ -7,7 +7,27 @@
  * Config priority: CLI flags > env vars > defaults
  */
 
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
+
 export type LLMProvider = 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+
+/**
+ * Get proxy agent from explicit URL or environment variables
+ * Priority: explicit URL > http_proxy > HTTP_PROXY > https_proxy > HTTPS_PROXY
+ */
+function getProxyAgent(explicitProxyUrl?: string): ProxyAgent | null {
+  const proxyUrl =
+    explicitProxyUrl ||
+    process.env.http_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTPS_PROXY;
+
+  if (proxyUrl) {
+    return new ProxyAgent(proxyUrl);
+  }
+  return null;
+}
 
 export interface LLMConfig {
   apiKey: string;
@@ -21,6 +41,8 @@ export interface LLMConfig {
   apiVersion?: string;
   /** When true, strips sampling params and uses max_completion_tokens instead of max_tokens */
   isReasoningModel?: boolean;
+  /** Explicit proxy URL (e.g. http://proxy:8080) */
+  proxyUrl?: string;
 }
 
 export interface LLMResponse {
@@ -65,6 +87,7 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     apiVersion:
       overrides?.apiVersion || process.env.GITNEXUS_AZURE_API_VERSION || savedConfig.apiVersion,
     isReasoningModel: overrides?.isReasoningModel ?? savedConfig.isReasoningModel,
+    proxyUrl: overrides?.proxyUrl || savedConfig.proxyUrl,
   };
 }
 
@@ -169,17 +192,19 @@ export async function callLLM(
 
   const MAX_RETRIES = 3;
   let lastError: Error | null = null;
+  const proxyAgent = getProxyAgent(config.proxyUrl);
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const response = await fetch(url, {
+      const response = await undiciFetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...authHeaders,
         },
         body: JSON.stringify(body),
-      });
+        dispatcher: proxyAgent ?? undefined,
+      } as any);
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'unknown error');
@@ -225,23 +250,29 @@ export async function callLLM(
         throw new Error('LLM returned empty response');
       }
 
+      // Clean up reasoning content from models that include <thinking> or 【】 tags
+      let content = choice.message.content.replace(/<thinking>[\s\S]*?<\/thinking>|【 thinking 】[\s\S]*?【\/ thinking 】/gi, '').trim();
+
       return {
-        content: choice.message.content,
+        content,
         promptTokens: json.usage?.prompt_tokens,
         completionTokens: json.usage?.completion_tokens,
       };
     } catch (err: any) {
       lastError = err;
+      const errMsg = err.message || String(err);
+      const errCode = err.code || 'unknown';
 
       // Network error — retry with backoff
-      if (
-        attempt < MAX_RETRIES - 1 &&
-        (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.message?.includes('fetch'))
-      ) {
+      const isRetryable = errCode === 'ECONNREFUSED' || errCode === 'ETIMEDOUT' || errMsg.includes('fetch') || errMsg.includes('ECONNREFUSED') || errMsg.includes('timeout');
+
+      if (attempt < MAX_RETRIES - 1 && isRetryable) {
         await sleep((attempt + 1) * 3000);
         continue;
       }
 
+      // Only log on final failure
+      process.stderr.write(`\n[LLM] Error: ${errMsg.slice(0, 200)}\n`);
       throw err;
     }
   }
@@ -306,6 +337,9 @@ async function readSSEStream(
   if (!content) {
     throw new Error('LLM returned empty streaming response');
   }
+
+  // Clean up reasoning content from models that include <thinking> or 【】 tags
+  content = content.replace(/<thinking>[\s\S]*?<\/thinking>|【 thinking 】[\s\S]*?【\/ thinking 】/gi, '').trim();
 
   return { content };
 }

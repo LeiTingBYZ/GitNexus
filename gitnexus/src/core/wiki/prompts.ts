@@ -13,9 +13,10 @@ Rules:
 - Each module should represent a cohesive feature, layer, or domain
 - Every file must appear in exactly one module
 - Module names should be human-readable (e.g. "Authentication", "Database Layer", "API Routes")
-- Aim for 5-15 modules for a typical project. Fewer for small projects, more for large ones
+- Create as many modules as needed to represent distinct functional areas — do not artificially merge unrelated code
 - Group by functionality, not by file type or directory structure alone
-- Do NOT create modules for tests, configs, or non-source files`;
+- Do NOT create modules for tests, configs, or non-source files
+- Write module names in Chinese (中文)`;
 
 export const GROUPING_USER_PROMPT = `Group these source files into documentation modules.
 
@@ -26,10 +27,10 @@ export const GROUPING_USER_PROMPT = `Group these source files into documentation
 {{DIRECTORY_TREE}}
 
 Respond with ONLY a JSON object mapping module names to file path arrays. No markdown, no explanation.
-Example format:
+Example format (module names should be in Chinese):
 {
-  "Authentication": ["src/auth/login.ts", "src/auth/session.ts"],
-  "Database": ["src/db/connection.ts", "src/db/models.ts"]
+  "认证模块": ["src/auth/login.ts", "src/auth/session.ts"],
+  "数据库层": ["src/db/connection.ts", "src/db/models.ts"]
 }`;
 
 // ─── Leaf Module Prompt ───────────────────────────────────────────────
@@ -41,9 +42,10 @@ Rules:
 - Start directly with the module heading and content
 - Reference actual function names, class names, and code patterns — do NOT invent APIs
 - Use the call graph and execution flow data for accuracy, but do NOT mechanically list every edge
-- Include Mermaid diagrams only when they genuinely help understanding. Keep them small (5-10 nodes max)
+- Include Mermaid diagrams only when they genuinely help understanding.
 - Structure the document however makes sense for this module — there is no mandatory format
-- Write for a developer who needs to understand and contribute to this code`;
+- Write for a developer who needs to understand and contribute to this code
+- Write all documentation content in Chinese (中文)`;
 
 export const MODULE_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module.
 
@@ -72,7 +74,8 @@ Rules:
 - Reference actual components from the child modules
 - Focus on how the sub-modules work together, not repeating their individual docs
 - Keep it concise — the reader can click through to child pages for detail
-- Include a Mermaid diagram only if it genuinely clarifies how the sub-modules relate`;
+- Include a Mermaid diagram only if it genuinely clarifies how the sub-modules relate
+- Write all documentation content in Chinese (中文)`;
 
 export const PARENT_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module, which contains these sub-modules:
 
@@ -83,7 +86,7 @@ Shared execution flows: {{CROSS_PROCESSES}}
 
 ---
 
-Write a concise overview of this module group. Explain its purpose, how the sub-modules fit together, and the key workflows that span them. Link to sub-module pages (e.g. \`[Sub-module Name](sub-module-slug.md)\`) rather than repeating their content. Use whatever structure fits best.`;
+Write a concise overview of this module group. Explain its purpose, how the sub-modules fit together, and the key workflows that span them. Link to sub-module pages (e.g. \`[子模块名称](sub-module-slug.md)\`) rather than repeating their content. Use whatever structure fits best.`;
 
 // ─── Overview Prompt ──────────────────────────────────────────────────
 
@@ -94,9 +97,10 @@ Rules:
 - Start directly with the project heading and content
 - Be clear and welcoming — this is the entry point to the entire codebase
 - Reference actual module names so readers can navigate to their docs
-- Include a high-level Mermaid architecture diagram showing only the most important modules and their relationships (max 10 nodes). A new dev should grasp it in 10 seconds
+- Include a high-level Mermaid architecture diagram showing only the most important modules and their relationships.
 - Do NOT create module index tables or list every module with descriptions — just link to module pages naturally within the text
-- Use the inter-module edges and execution flow data for accuracy, but do NOT dump them raw`;
+- Use the inter-module edges and execution flow data for accuracy, but do NOT dump them raw
+- Write all documentation content in Chinese (中文)`;
 
 export const OVERVIEW_USER_PROMPT = `Write the overview page for this repository's wiki.
 
@@ -115,7 +119,7 @@ Key system flows: {{TOP_PROCESSES}}
 
 ---
 
-Write a clear overview of this project: what it does, how it's architected, and the key end-to-end flows. Include a simple Mermaid architecture diagram (max 10 nodes, big-picture only). Link to module pages (e.g. \`[Module Name](module-slug.md)\`) naturally in the text rather than listing them in a table. If project config was provided, include brief setup instructions. Structure the page however reads best.`;
+Write a clear overview of this project: what it does, how it's architected, and the key end-to-end flows. Include a simple Mermaid architecture diagram (max 10 nodes, big-picture only). Link to module pages (e.g. \`[模块名称](module-slug.md)\`) naturally in the text rather than listing them in a table. If project config was provided, include brief setup instructions. Structure the page however reads best.`;
 
 // ─── Template Substitution Helper ─────────────────────────────────────
 
