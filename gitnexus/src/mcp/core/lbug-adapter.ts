@@ -564,11 +564,26 @@ export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
 /** Regex to detect write operations in user-supplied Cypher queries.
  * Note: CALL is NOT blocked — it's used for read-only FTS (CALL QUERY_FTS_INDEX)
  * and vector search (CALL QUERY_VECTOR_INDEX). The database is opened in
- * read-only mode as defense-in-depth against write procedures. */
-export const CYPHER_WRITE_RE =
-  /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD)\b/i;
+ * read-only mode as defense-in-depth against write procedures.
+ *
+ * We only detect write operations that appear as Cypher keywords (preceded by whitespace
+ * or punctuation like :,(, not as part of file paths like /install/) */
+const WRITE_KEYWORDS = ['CREATE', 'DELETE', 'SET', 'MERGE', 'REMOVE', 'DROP', 'ALTER', 'COPY', 'DETACH', 'FOREACH', 'INSTALL', 'LOAD'];
+
+function containsWriteKeyword(query: string): boolean {
+  const upperQuery = query.toUpperCase();
+  for (const keyword of WRITE_KEYWORDS) {
+    // Match keyword only when preceded by whitespace, '(', ',', or ':'
+    // This avoids matching keywords that are part of file paths like /install/
+    const regex = new RegExp(`[\\s(,:]${keyword}\\b`);
+    if (regex.test(upperQuery)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /** Check if a Cypher query contains write operations */
 export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
+  return containsWriteKeyword(query);
 }
