@@ -380,6 +380,9 @@ export class WikiGenerator {
     // Leaves can run in parallel; parents must wait for their children
     const { leaves, parents } = this.flattenModuleTree(moduleTree);
 
+    // Re-init DB connection before processing (may have been evicted by LRU)
+    await initWikiDb(this.lbugPath);
+
     // Process all leaf modules in parallel
     pagesGenerated += await this.runParallel(leaves, async (node) => {
       const pagePath = path.join(this.wikiDir, `${node.slug}.md`);
@@ -398,6 +401,9 @@ export class WikiGenerator {
         return 0;
       }
     });
+
+    // Re-init DB before parent modules (may have been idle during leaf processing)
+    touchWikiDb();
 
     // Process parent modules sequentially (they depend on child docs)
     for (const node of parents) {
@@ -553,7 +559,9 @@ export class WikiGenerator {
         );
       } catch (err: any) {
         console.error(`[ERROR] Batch ${batchIdx + 1}/${totalBatches} failed:`);
-        console.error(`  - Files: ${batchFiles.length}, Size: ${Math.round(batchTotalSize / 1024)}KB`);
+        console.error(
+          `  - Files: ${batchFiles.length}, Size: ${Math.round(batchTotalSize / 1024)}KB`,
+        );
         console.error(`  - First file: ${batchFiles[0]?.filePath}`);
         console.error(`  - Last file: ${batchFiles[batchFiles.length - 1]?.filePath}`);
         console.error(`  - Error: ${err.message || err}`);
@@ -837,7 +845,7 @@ export class WikiGenerator {
       }
 
       // Find matching files
-      let matchedFiles: string[] = [];
+      const matchedFiles: string[] = [];
 
       if (required.paths && required.paths.length > 0) {
         // Use specified paths
@@ -1423,11 +1431,14 @@ export class WikiGenerator {
   }
 
   private slugify(name: string): string {
-    return name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60);
+    return (
+      name
+        .toLowerCase()
+        // Keep ASCII alphanumerics + Chinese characters (\u4e00-\u9fff)
+        .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 60)
+    );
   }
 
   private async fileExists(fp: string): Promise<boolean> {
