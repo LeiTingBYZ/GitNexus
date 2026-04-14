@@ -14,6 +14,38 @@ if (!process.env.ORT_LOG_LEVEL) {
   process.env.ORT_LOG_LEVEL = '3';
 }
 
+// Monkey-patch global fetch to support HTTP_PROXY/HTTPS_PROXY environment variables
+// Node.js 22+ native fetch does not use these env vars, so use undici's fetch instead
+import { fetch as undiciFetch, setGlobalDispatcher, ProxyAgent } from 'undici';
+
+const httpProxy = process.env.HTTP_PROXY || process.env.http_proxy;
+const httpsProxy = process.env.HTTPS_PROXY || process.env.https_proxy || httpProxy;
+
+if (httpProxy || httpsProxy) {
+  // Use the first available proxy (prefer https proxy)
+  const proxyUrl = httpsProxy || httpProxy;
+  console.log(`🔧 Using proxy: ${proxyUrl}`);
+  const proxyAgent = new ProxyAgent(proxyUrl);
+
+  // Use undici's dispatcher for proxy support
+  setGlobalDispatcher(proxyAgent);
+
+  // Replace global fetch with undici's fetch
+  // @ts-ignore - Type mismatch between native fetch and undici fetch
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+    try {
+      // @ts-ignore - Type mismatch between fetch types
+      const response = await undiciFetch(input, init);
+      console.log(`🌐 Fetch succeeded: ${urlStr} -> ${response.status}`);
+      return response;
+    } catch (err: any) {
+      console.log(`🌐 Fetch failed: ${urlStr} -> ${err.message}`);
+      throw err;
+    }
+  };
+}
+
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import { existsSync } from 'fs';
 import { execFileSync } from 'child_process';
@@ -157,6 +189,9 @@ export const initEmbedder = async (
     try {
       // Configure transformers.js environment
       env.allowLocalModels = false;
+      // Disable file system cache to avoid cache issues with proxy
+      env.useFSCache = false;
+      console.log(`🔧 FSCache disabled`);
 
       const isDev = process.env.NODE_ENV === 'development';
       if (isDev) {

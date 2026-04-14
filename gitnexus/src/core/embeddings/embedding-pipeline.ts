@@ -9,6 +9,8 @@
  * 5. Create vector index for semantic search
  */
 
+import { join } from 'path';
+
 import {
   initEmbedder,
   embedBatch,
@@ -117,13 +119,43 @@ const createVectorIndex = async (
 ): Promise<void> => {
   // LadybugDB v0.15+ requires explicit VECTOR extension loading (once per session)
   if (!vectorExtensionLoaded) {
+    // Try INSTALL first (works if network is available)
     try {
+      if (isDev) console.log('📦 Installing VECTOR extension from repository...');
       await executeQuery('INSTALL VECTOR');
+      if (isDev) console.log('📦 Loading VECTOR extension...');
       await executeQuery('LOAD EXTENSION VECTOR');
       vectorExtensionLoaded = true;
+      if (isDev) console.log('✅ VECTOR extension loaded from repository');
     } catch {
-      // Extension may already be loaded — CREATE_VECTOR_INDEX will fail clearly if not
-      vectorExtensionLoaded = true;
+      // INSTALL failed (likely network issue) - try loading from local cache
+      // Check multiple possible locations for the extension
+      const possiblePaths = [
+        join(process.cwd(), '.duckdb_extensions', 'vector.lbug_extension'),
+        join(process.cwd(), '..', '.duckdb_extensions', 'vector.lbug_extension'),
+        join(process.cwd(), '..', '..', '.duckdb_extensions', 'vector.lbug_extension'),
+      ];
+
+      let loaded = false;
+      for (const extPath of possiblePaths) {
+        try {
+          if (isDev) console.log(`📦 Trying VECTOR extension from: ${extPath}`);
+          await executeQuery(`LOAD '${extPath}'`);
+          vectorExtensionLoaded = true;
+          if (isDev) console.log('✅ VECTOR extension loaded from local cache');
+          loaded = true;
+          break;
+        } catch {
+          // Try next path
+        }
+      }
+
+      if (!loaded) {
+        if (isDev) {
+          console.error('❌ VECTOR extension not available (no network and no local cache)');
+        }
+        return; // Skip vector index creation
+      }
     }
   }
 
@@ -132,11 +164,13 @@ const createVectorIndex = async (
   `;
 
   try {
+    if (isDev) console.log('📦 Creating vector index...');
     await executeQuery(cypher);
-  } catch (error) {
+    if (isDev) console.log('✅ Vector index created');
+  } catch (error: any) {
     // Index might already exist
     if (isDev) {
-      console.warn('Vector index creation warning:', error);
+      console.warn('⚠️ Vector index creation:', error?.message || error);
     }
   }
 };
