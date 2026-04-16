@@ -476,8 +476,8 @@ export class WikiGenerator {
     this.onProgress('grouping', 15, 'Grouping files into modules (LLM)...');
 
     // Get file sizes directly from filesystem to batch by cumulative size
-    // Target ~800KB of source code per batch (~80K tokens for prompt, leaving room for response)
-    const TARGET_BATCH_SIZE_BYTES = 500 * 1024; // 500KB ~125K tokens for English
+    // Target ~2MB of source code per batch for larger, more cohesive modules
+    const TARGET_BATCH_SIZE_BYTES = 2 * 1024 * 1024; // 2MB
     const sizeMap = new Map<string, number>();
 
     // Fetch file sizes in parallel (limit concurrency to avoid overwhelming the filesystem)

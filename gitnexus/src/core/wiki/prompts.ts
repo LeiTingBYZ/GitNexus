@@ -13,9 +13,12 @@ Rules:
 - Each module should represent a cohesive feature, layer, or domain
 - Every file must appear in exactly one module
 - Module names should be human-readable (e.g. "Authentication", "Database Layer", "API Routes")
-- Create as many modules as needed to represent distinct functional areas — do not artificially merge unrelated code
+- For large codebases (50+ files), split into MANY specific modules - prefer fine-grained over coarse-grained
+- Each module should have a clear, single responsibility
 - Group by functionality, not by file type or directory structure alone
 - Do NOT create modules for tests, configs, or non-source files
+- IMPORTANT: A directory with many files should be split into multiple focused modules
+- As a rule of thumb, keep the file count per module under 10
 - Write module names in Chinese (中文)`;
 
 export const GROUPING_USER_PROMPT = `Group these source files into documentation modules.
