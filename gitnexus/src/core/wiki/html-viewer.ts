@@ -85,7 +85,7 @@ function buildHTML(
   parts.push('<title>' + esc(projectName) + ' — Wiki</title>');
   parts.push('<script src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"><\/script>');
   parts.push(
-    '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"><\/script>',
+    '<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"><\/script>',
   );
   parts.push('<style>');
   parts.push(CSS);
@@ -196,7 +196,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .content th{background:var(--sidebar-bg);font-weight:600}
 .content img{max-width:100%;border-radius:var(--radius)}
 .content hr{border:none;border-top:1px solid var(--border);margin:32px 0}
-.content .mermaid{margin:20px 0;text-align:center}
+.content .mermaid{margin:20px 0;text-align:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
 
 .menu-toggle{display:none;position:fixed;top:12px;left:12px;z-index:20;
   background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
@@ -217,7 +217,12 @@ const JS_APP = `
   var activePage = 'overview';
 
   document.addEventListener('DOMContentLoaded', function() {
-    mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose' });
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'neutral',
+      securityLevel: 'loose',
+      fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif',
+    });
     renderMeta();
     renderNav();
     document.getElementById('menu-toggle').addEventListener('click', function() {

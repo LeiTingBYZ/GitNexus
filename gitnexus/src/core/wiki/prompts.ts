@@ -13,12 +13,12 @@ Rules:
 - Each module should represent a cohesive feature, layer, or domain
 - Every file must appear in exactly one module
 - Module names should be human-readable (e.g. "Authentication", "Database Layer", "API Routes")
-- For large codebases (50+ files), split into MANY specific modules - prefer fine-grained over coarse-grained
+- For large codebases (20+ files), split into MANY specific modules - prefer fine-grained over coarse-grained
 - Each module should have a clear, single responsibility
-- Group by functionality, not by file type or directory structure alone
+- IMPORTANT: Group by functionality, not by file type or directory structure alone
 - Do NOT create modules for tests, configs, or non-source files
 - IMPORTANT: A directory with many files should be split into multiple focused modules
-- As a rule of thumb, keep the file count per module under 10
+- IMPORTANT: As a rule of thumb, keep the file count per module under 10
 - Write module names in Chinese (中文)`;
 
 export const GROUPING_USER_PROMPT = `Group these source files into documentation modules.
@@ -48,7 +48,17 @@ Rules:
 - Include Mermaid diagrams only when they genuinely help understanding.
 - Structure the document however makes sense for this module — there is no mandatory format
 - Write for a developer who needs to understand and contribute to this code
-- Write all documentation content in Chinese (中文)`;
+- Write all documentation content in Chinese (中文)
+
+IMPORTANT Mermaid Diagram Rules:
+- For sequence diagrams, use ONLY simple participant labels without "as" keyword, e.g., \`participant Main\` instead of \`participant Main as ByteD03BMCMain\`
+- Use quotes around labels that contain special characters: \`participant Main as "主函数(ByteD03BMCMain)"\` or \`participant Main["ByteD03BMCMain"]\`
+- Avoid using parentheses () in participant labels without proper escaping
+- When using flowcharts, always quote node labels that contain function names: \`A["functionName()"]\`
+- CRITICAL: Always quote node labels that contain square brackets \`[]\`, brackets \`()\`, angle brackets \`<>\`, or curly braces \`{}\`: use \`A["array[index]"]\` instead of \`A[array[index]]\`, use \`A["function()"]\` instead of \`A[function()]\`, use \`A["GET /path/{id}"]\` instead of \`A[GET /path/{id}]\`
+- CRITICAL: Do NOT use non-standard diagram types like \`flashmap\`. Use only standard mermaid diagram types: \`graph\`, \`flowchart\`, \`sequenceDiagram\`, \`classDiagram\`, \`stateDiagram-v2\`, \`erDiagram\`, \`pie\`, \`gantt\`, \`gitGraph\`, \`requirementDiagram\`, or \`journey\`. For memory/flash layout visualizations, use \`graph TB\` or \`flowchart TB\`
+- Message text can be in Chinese but avoid colons in message text
+- CRITICAL: Do NOT use participant names that are mermaid keywords (create, loop, alt, else, opt, par, break, critical, section, exclude, optional, iteractor). For example, instead of \`Create->>Create\`, use \`Creator->>Creator\` or \`ThreadCreate->>ThreadCreate\` (avoid "Create" as participant name)`;
 
 export const MODULE_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module.
 
@@ -78,7 +88,16 @@ Rules:
 - Focus on how the sub-modules work together, not repeating their individual docs
 - Keep it concise — the reader can click through to child pages for detail
 - Include a Mermaid diagram only if it genuinely clarifies how the sub-modules relate
-- Write all documentation content in Chinese (中文)`;
+- Write all documentation content in Chinese (中文)
+
+IMPORTANT Mermaid Diagram Rules:
+- For sequence diagrams, use ONLY simple participant labels without "as" keyword, e.g., \`participant Main\` instead of \`participant Main as ByteD03BMCMain\`
+- Use quotes around labels that contain special characters: \`participant Main as "主函数(ByteD03BMCMain)"\` or \`participant Main["ByteD03BMCMain"]\`
+- Avoid using parentheses () in participant labels without proper escaping
+- When using flowcharts, always quote node labels that contain function names: \`A["functionName()"]\`
+- CRITICAL: Always quote node labels that contain square brackets \`[]\`, brackets \`()\`, angle brackets \`<>\`, or curly braces \`{}\`: use \`A["array[index]"]\` instead of \`A[array[index]]\`, use \`A["function()"]\` instead of \`A[function()]\`, use \`A["GET /path/{id}"]\` instead of \`A[GET /path/{id}]\`
+- CRITICAL: Do NOT use non-standard diagram types like \`flashmap\`. Use only standard mermaid diagram types: \`graph\`, \`flowchart\`, \`sequenceDiagram\`, \`classDiagram\`, \`stateDiagram-v2\`, \`erDiagram\`, \`pie\`, \`gantt\`, \`gitGraph\`, \`requirementDiagram\`, or \`journey\`. For memory/flash layout visualizations, use \`graph TB\` or \`flowchart TB\`
+- CRITICAL: Do NOT use participant names that are mermaid keywords (create, loop, alt, else, opt, par, break, critical, section, exclude, optional, iteractor). For example, instead of \`Create->>Create\`, use \`Creator->>Creator\` or \`ThreadCreate->>ThreadCreate\``;
 
 export const PARENT_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module, which contains these sub-modules:
 
@@ -103,7 +122,15 @@ Rules:
 - Include a high-level Mermaid architecture diagram showing only the most important modules and their relationships.
 - Do NOT create module index tables or list every module with descriptions — just link to module pages naturally within the text
 - Use the inter-module edges and execution flow data for accuracy, but do NOT dump them raw
-- Write all documentation content in Chinese (中文)`;
+- Write all documentation content in Chinese (中文)
+
+IMPORTANT Mermaid Diagram Rules:
+- Use quotes around node labels that contain special characters: \`A["ModuleName"]\` instead of \`A[ModuleName]\`
+- Avoid using parentheses () in node labels without proper escaping
+- Keep architecture diagrams simple (max 10 nodes)
+- For sequence diagrams, do NOT use participant names that are mermaid keywords (create, loop, alt, else, opt, par, break, critical, section, exclude, optional)
+- CRITICAL: Always quote node labels that contain square brackets \`[]\`, brackets \`()\`, angle brackets \`<>\`, or curly braces \`{}\`: use \`A["array[index]"]\` instead of \`A[array[index]]\`, use \`A["GET /path/{id}"]\` instead of \`A[GET /path/{id}]\`
+- CRITICAL: Do NOT use non-standard diagram types like \`flashmap\`. Use only standard mermaid diagram types: \`graph\`, \`flowchart\`, \`sequenceDiagram\`, \`classDiagram\`, \`stateDiagram-v2\`, \`erDiagram\`, \`pie\`, \`gantt\`, \`gitGraph\`, \`requirementDiagram\`, or \`journey\``;
 
 export const OVERVIEW_USER_PROMPT = `Write the overview page for this repository's wiki.
 

@@ -234,6 +234,9 @@ export class WikiGenerator {
       try {
         await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
       } catch {}
+      try {
+        await fs.unlink(path.join(this.wikiDir, 'module_tree.json'));
+      } catch {}
       // Delete existing module pages so they get regenerated
       const existingFiles = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
       for (const f of existingFiles) {
@@ -792,31 +795,113 @@ export class WikiGenerator {
   }
 
   /**
-   * Group files by top-level directory to preserve directory context.
-   * Files without a clear top-level directory go into "root" group.
+   * Split a large module into sub-modules by finding the optimal directory depth.
+   * Tries multiple depth levels and selects the one that produces the best distribution.
    */
-  private groupByTopLevelDirectory(files: FileWithExports[]): Record<string, FileWithExports[]> {
-    const groups: Record<string, FileWithExports[]> = {};
-
-    for (const file of files) {
-      const parts = file.filePath.replace(/\\/g, '/').split('/');
-      // Top-level is the first directory (e.g., "packages", "src", "tools")
-      // or "root" for files in the repo root
-      let topLevel = parts.length > 1 ? parts[0] : 'root';
-
-      // Normalize common variations
-      if (topLevel === 'packages' && parts.length > 2) {
-        // For monorepos, use second level as top-level (e.g., "packages/featurepack")
-        topLevel = parts.slice(0, 2).join('/');
-      }
-
-      if (!groups[topLevel]) {
-        groups[topLevel] = [];
-      }
-      groups[topLevel].push(file);
+  private splitBySubdirectory(moduleName: string, files: string[]): ModuleTreeNode[] {
+    if (files.length <= 10) {
+      // Small module, no need to split
+      return [
+        {
+          name: moduleName,
+          slug: this.slugify(moduleName),
+          files,
+        },
+      ];
     }
 
-    return groups;
+    // Try different depth levels to find the best grouping
+    const results: Map<string, string[]>[] = [];
+    const minDepth = 2;
+    const maxDepth = Math.min(
+      6,
+      Math.min(...files.map((f) => f.replace(/\\/g, '/').split('/').length)),
+    );
+
+    for (let depth = minDepth; depth <= maxDepth; depth++) {
+      const subGroups = new Map<string, string[]>();
+      for (const fp of files) {
+        const parts = fp.replace(/\\/g, '/').split('/');
+        const subDir = parts.slice(0, depth).join('/');
+        if (!subGroups.has(subDir)) {
+          subGroups.set(subDir, []);
+        }
+        subGroups.get(subDir)!.push(fp);
+      }
+      results.push(subGroups);
+    }
+
+    // Score each grouping: prefer more groups with balanced file distribution
+    let bestGroups: Map<string, string[]> | null = null;
+    let bestScore = -1;
+
+    for (const groups of results) {
+      const groupCount = groups.size;
+      if (groupCount < 2) continue; // Need at least 2 groups
+
+      // Calculate balance: variance of group sizes (lower is better)
+      const sizes = Array.from(groups.values()).map((g) => g.length);
+      const avgSize = sizes.reduce((a, b) => a + b, 0) / sizes.length;
+      const variance = sizes.reduce((sum, s) => sum + Math.pow(s - avgSize, 2), 0) / sizes.length;
+
+      // Score: more groups is better, lower variance is better
+      // Normalize variance relative to average size
+      const normalizedVariance = avgSize > 0 ? variance / (avgSize * avgSize) : 0;
+      const score = groupCount / (1 + normalizedVariance);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestGroups = groups;
+      }
+    }
+
+    // If no good grouping found at deeper levels, use simple top-level directory grouping
+    if (!bestGroups) {
+      return this.splitBySubdirectorySimple(moduleName, files);
+    }
+
+    // Check if basenames are unique; if not, use the full subDir path
+    const basenames = Array.from(bestGroups.keys()).map((s) => path.basename(s));
+    const hasCollisions = new Set(basenames).size < basenames.length;
+
+    return Array.from(bestGroups.entries()).map(([subDir, subFiles]) => {
+      const label = hasCollisions ? subDir.replace(/\//g, '-') : path.basename(subDir);
+      return {
+        name: `${moduleName} — ${label}`,
+        slug: this.slugify(`${moduleName}-${label}`),
+        files: subFiles,
+      };
+    });
+  }
+
+  /**
+   * Simple subdirectory splitting (fallback).
+   */
+  private splitBySubdirectorySimple(moduleName: string, files: string[]): ModuleTreeNode[] {
+    const subGroups = new Map<string, string[]>();
+    for (const fp of files) {
+      const parts = fp.replace(/\\/g, '/').split('/');
+      const subDir = parts.length > 2 ? parts.slice(0, 2).join('/') : parts[0];
+      let group = subGroups.get(subDir);
+      if (!group) {
+        group = [];
+        subGroups.set(subDir, group);
+      }
+      group.push(fp);
+    }
+
+    // Check if basenames are unique; if not, use the full subDir path
+    const basenames = Array.from(subGroups.keys()).map((s) => path.basename(s));
+    const hasCollisions = new Set(basenames).size < basenames.length;
+
+    return Array.from(subGroups.entries()).map(([subDir, subFiles]) => {
+      const label = hasCollisions ? subDir.replace(/\//g, '-') : path.basename(subDir);
+      return {
+        name: `${moduleName} — ${label}`,
+        slug: this.slugify(`${moduleName}-${label}`),
+        files: subFiles,
+      };
+    });
   }
 
   /**
@@ -878,38 +963,6 @@ export class WikiGenerator {
     }
 
     return newTree;
-  }
-
-  /**
-   * Split a large module into sub-modules by subdirectory.
-   * Uses the full subDir path for naming to avoid slug collisions
-   * (e.g., "synapse-screen/src" vs "synapse-core/src").
-   */
-  private splitBySubdirectory(moduleName: string, files: string[]): ModuleTreeNode[] {
-    const subGroups = new Map<string, string[]>();
-    for (const fp of files) {
-      const parts = fp.replace(/\\/g, '/').split('/');
-      const subDir = parts.length > 2 ? parts.slice(0, 2).join('/') : parts[0];
-      let group = subGroups.get(subDir);
-      if (!group) {
-        group = [];
-        subGroups.set(subDir, group);
-      }
-      group.push(fp);
-    }
-
-    // Check if basenames are unique; if not, use the full subDir path
-    const basenames = Array.from(subGroups.keys()).map((s) => path.basename(s));
-    const hasCollisions = new Set(basenames).size < basenames.length;
-
-    return Array.from(subGroups.entries()).map(([subDir, subFiles]) => {
-      const label = hasCollisions ? subDir.replace(/\//g, '-') : path.basename(subDir);
-      return {
-        name: `${moduleName} — ${label}`,
-        slug: this.slugify(`${moduleName}-${label}`),
-        files: subFiles,
-      };
-    });
   }
 
   // ─── Phase 2: Generate Module Pages ─────────────────────────────────
