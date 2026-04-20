@@ -6,6 +6,7 @@ import type { Path } from 'path-scurry';
 const DEFAULT_IGNORE_LIST = new Set([
   // Version Control
   '.git',
+  '.gitnexus',
   '.svn',
   '.hg',
   '.bzr',
@@ -370,12 +371,53 @@ export const loadIgnoreRules = async (
 };
 
 /**
+ * Load RepoIgnoreFiles patterns from .gitnexus/meta.json
+ * This should be called BEFORE createIgnoreFilter to avoid recursion issues.
+ */
+export const loadRepoIgnorePatterns = async (repoPath: string): Promise<string[]> => {
+  try {
+    const metaPath = nodePath.join(repoPath, '.gitnexus', 'meta.json');
+    const content = await fs.readFile(metaPath, 'utf-8');
+    const meta = JSON.parse(content);
+    return meta.RepoIgnoreFiles || [];
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Create a compiled regex filter from RepoIgnoreFiles patterns.
+ * Use this separately from createIgnoreFilter to avoid recursion.
+ */
+export const createRepoIgnoreFilter = (patterns: string[]) => {
+  const compiledPatterns = patterns
+    .map((pattern) => {
+      try {
+        return new RegExp(pattern);
+      } catch {
+        console.warn(`  Warning: Invalid regex pattern in RepoIgnoreFiles: ${pattern}`);
+        return null;
+      }
+    })
+    .filter(Boolean) as RegExp[];
+
+  return {
+    matches: (filePath: string): boolean => {
+      for (const regex of compiledPatterns) {
+        if (regex.test(filePath)) return true;
+      }
+      return false;
+    },
+  };
+};
+
+/**
  * Create a glob-compatible ignore filter combining:
  * - .gitignore / .gitnexusignore patterns (via `ignore` package)
  * - Hardcoded DEFAULT_IGNORE_LIST, IGNORED_EXTENSIONS, IGNORED_FILES
  *
- * Returns an IgnoreLike object for glob's `ignore` option,
- * enabling directory-level pruning during traversal.
+ * Note: RepoIgnoreFiles should be applied separately using createRepoIgnoreFilter
+ * to avoid potential recursion issues during file scanning.
  */
 export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptions) => {
   const ig = await loadIgnoreRules(repoPath, options);
@@ -388,6 +430,7 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       if (!rel) return false;
       // Check .gitignore / .gitnexusignore patterns
       if (ig && ig.ignores(rel)) return true;
+      // Note: RepoIgnoreFiles filtering is applied separately in the pipeline
       // Fall back to hardcoded rules
       return shouldIgnorePath(rel);
     },

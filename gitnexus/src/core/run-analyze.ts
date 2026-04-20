@@ -279,6 +279,17 @@ export async function runFullAnalysis(
       /* table may not exist if embeddings never ran */
     }
 
+    // Preserve custom fields from existing meta.json (e.g., RepoIgnoreFiles, RequiredModules)
+    const customFields: Record<string, any> = {};
+    const existingMeta = await loadMeta(storagePath);
+    if (existingMeta) {
+      for (const key of Object.keys(existingMeta)) {
+        if (!['repoPath', 'lastCommit', 'indexedAt', 'stats'].includes(key)) {
+          customFields[key] = existingMeta[key];
+        }
+      }
+    }
+
     const meta = {
       repoPath,
       lastCommit: currentCommit,
@@ -291,6 +302,7 @@ export async function runFullAnalysis(
         processes: pipelineResult.processResult?.stats.totalProcesses,
         embeddings: embeddingCount,
       },
+      ...customFields,
     };
     await saveMeta(storagePath, meta);
     await registerRepo(repoPath, meta);
