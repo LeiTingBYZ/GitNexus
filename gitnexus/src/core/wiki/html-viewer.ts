@@ -337,10 +337,10 @@ var STORAGE_KEY = 'gitnexus_wiki_edits';
   }
 
   function checkAndNavigate(page) {
-    // Check if current page has unsaved changes
-    var hasUnsavedChanges = false;
+    // If currently in edit mode, always exit edit mode when navigating
     if (editMode) {
-      // Check textarea value against editedPages
+      // Check if there are unsaved changes
+      var hasUnsavedChanges = false;
       var textarea = document.getElementById('editor-textarea');
       if (textarea) {
         var currentValue = textarea.value;
@@ -350,39 +350,35 @@ var STORAGE_KEY = 'gitnexus_wiki_edits';
           hasUnsavedChanges = currentValue !== PAGES[activePage];
         }
       }
-    }
 
-    if (editMode && hasUnsavedChanges) {
-      pendingNavigateTo = page;
-      var confirmed = confirm('当前页面有未保存的修改，是否保存？');
-      if (confirmed) {
-        // Save current page first
-        saveCurrentPageSilent();
-        // Then navigate after a short delay
-        setTimeout(function() { doNavigate(page); }, 50);
-      } else {
-        // Discard changes and navigate
-        discardCurrentEdit();
-        doNavigate(page);
+      if (hasUnsavedChanges) {
+        pendingNavigateTo = page;
+        var confirmed = confirm('当前页面有未保存的修改，是否保存？');
+        if (confirmed) {
+          // Save current page first
+          saveCurrentPageSilent();
+          saveEditsToStorage();
+          // Then navigate after a short delay
+          setTimeout(function() { exitEditModeAndNavigate(page); }, 50);
+          return;
+        }
       }
+      // Either no changes or user chose not to save, exit edit mode and navigate
+      exitEditModeAndNavigate(page);
     } else {
       doNavigate(page);
     }
   }
 
-  function discardCurrentEdit() {
-    // Discard current page's changes only, keep other pages' edits
-    if (editedPages[activePage]) {
-      editedPages[activePage].edited = editedPages[activePage].original;
-    }
+  function exitEditModeAndNavigate(page) {
     editMode = false;
-    // Reset to normal state: show edit and download, hide cancel and save
+    // Reset to normal state
     document.getElementById('edit-toolbar').classList.remove('hidden');
     document.getElementById('btn-edit').classList.remove('hidden');
     document.getElementById('btn-cancel').classList.add('hidden');
     document.getElementById('btn-save-page').classList.add('hidden');
     document.getElementById('btn-download').classList.remove('hidden');
-    // Note: don't update localStorage here to preserve other pages' edits
+    doNavigate(page);
   }
 
   function doNavigate(page) {
