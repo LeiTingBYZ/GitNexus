@@ -337,8 +337,22 @@ var STORAGE_KEY = 'gitnexus_wiki_edits';
   }
 
   function checkAndNavigate(page) {
-    // If in edit mode and current page has unsaved changes, ask user
-    if (editMode && isPageEdited(activePage)) {
+    // Check if current page has unsaved changes
+    var hasUnsavedChanges = false;
+    if (editMode) {
+      // Check textarea value against editedPages
+      var textarea = document.getElementById('editor-textarea');
+      if (textarea) {
+        var currentValue = textarea.value;
+        if (editedPages[activePage]) {
+          hasUnsavedChanges = currentValue !== editedPages[activePage].edited;
+        } else {
+          hasUnsavedChanges = currentValue !== PAGES[activePage];
+        }
+      }
+    }
+
+    if (editMode && hasUnsavedChanges) {
       pendingNavigateTo = page;
       var confirmed = confirm('当前页面有未保存的修改，是否保存？');
       if (confirmed) {
