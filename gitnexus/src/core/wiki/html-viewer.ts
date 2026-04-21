@@ -97,6 +97,15 @@ function buildHTML(
   parts.push(
     '<button class="menu-toggle" id="menu-toggle" aria-label="Toggle menu">&#9776;</button>',
   );
+  // Edit toolbar (contains all buttons - visible by default with cancel/save hidden)
+  parts.push('<div class="edit-toolbar" id="edit-toolbar">');
+  parts.push('<button class="btn-secondary hidden" id="btn-cancel">取消</button>');
+  parts.push('<span class="edit-hint" id="edit-hint"></span>');
+  parts.push('<button class="btn-secondary hidden" id="btn-save-page">保存本页</button>');
+  parts.push('<button class="btn-save" id="btn-download">下载全部</button>');
+  parts.push('<button class="btn-secondary" id="btn-clear">清除已保存</button>');
+  parts.push('<button class="btn-edit" id="btn-edit">编辑</button>');
+  parts.push('</div>');
   parts.push('<div class="layout">');
 
   // Sidebar
@@ -123,6 +132,8 @@ function buildHTML(
   parts.push('var PAGES = ' + pagesJSON + ';');
   parts.push('var TREE = ' + treeJSON + ';');
   parts.push('var META = ' + metaJSON + ';');
+  // Store JS_APP source for regenerateHtml to use
+  parts.push('var JS_APP_SOURCE = ' + JSON.stringify(JS_APP) + ';');
   parts.push(JS_APP);
   parts.push('<\/script>');
 
@@ -209,12 +220,36 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 }
 .empty-state{text-align:center;padding:80px 20px;color:var(--text-muted)}
 .empty-state h2{font-size:20px;margin-bottom:8px;border:none}
+
+/* Edit mode styles */
+.edit-toolbar{position:sticky;top:0;background:var(--bg);padding:12px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;z-index:15;align-items:center}
+.edit-toolbar button{padding:8px 16px;border-radius:var(--radius);cursor:pointer;font-size:13px;font-weight:500;transition:all .15s;flex-shrink:0}
+.edit-toolbar .btn-secondary{background:var(--sidebar-bg);border:1px solid var(--border);color:var(--text)}
+.edit-toolbar .btn-secondary:hover{background:var(--hover)}
+.edit-toolbar .btn-save{background:#059669;color:#fff;border:none}
+.edit-toolbar .btn-save:hover{background:#047857}
+.edit-toolbar .btn-edit{background:var(--primary);color:#fff;border:none;margin-left:auto}
+.edit-toolbar .btn-edit:hover{background:#1d4ed8}
+.edit-toolbar .edit-hint{flex:1;text-align:center;font-size:13px;color:var(--text-muted)}
+.hidden{display:none !important}
+.editor-wrapper{display:none;padding:24px 0}
+.editor-wrapper.active{display:block}
+.editor-textarea{width:100%;min-height:500px;font-family:'SF Mono',Consolas,'Courier New',monospace;font-size:14px;line-height:1.6;padding:16px;border:1px solid var(--border);border-radius:var(--radius);resize:vertical;background:var(--bg);color:var(--text)}
+.editor-textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+.preview-wrapper{display:block}
+.preview-wrapper.hidden{display:none}
+.save-success{position:fixed;bottom:24px;right:24px;background:#059669;color:#fff;padding:12px 20px;border-radius:var(--radius);font-size:14px;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:100;animation:fadeInUp .3s ease}
+@keyframes fadeInUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 `;
 
 // The client-side JS is kept as a plain string to avoid template literal conflicts
 const JS_APP = `
+var activePage = 'overview';
+var pendingNavigateTo = null;  // Store the pending page to navigate to
+var STORAGE_KEY = 'gitnexus_wiki_edits';
 (function() {
-  var activePage = 'overview';
+  var editMode = false;
+  var editedPages = {};  // { slug: { original, edited } }
 
   document.addEventListener('DOMContentLoaded', function() {
     mermaid.initialize({
@@ -228,10 +263,21 @@ const JS_APP = `
     document.getElementById('menu-toggle').addEventListener('click', function() {
       document.getElementById('sidebar').classList.toggle('open');
     });
+
+    // Edit mode button
+    document.getElementById('btn-edit').addEventListener('click', enterEditMode);
+    document.getElementById('btn-cancel').addEventListener('click', cancelEditMode);
+    document.getElementById('btn-save-page').addEventListener('click', saveCurrentPage);
+    document.getElementById('btn-download').addEventListener('click', downloadAll);
+    document.getElementById('btn-clear').addEventListener('click', clearSaved);
+
+    // Load saved edits from localStorage
+    loadEditsFromStorage();
+
     if (location.hash && location.hash.length > 1) {
       activePage = decodeURIComponent(location.hash.slice(1));
     }
-    navigateTo(activePage);
+    doNavigate(activePage);
   });
 
   function renderMeta() {
@@ -261,7 +307,7 @@ const JS_APP = `
       while (target && !target.dataset.page) { target = target.parentElement; }
       if (target && target.dataset.page) {
         e.preventDefault();
-        navigateTo(target.dataset.page);
+        checkAndNavigate(target.dataset.page);
       }
     });
   }
@@ -286,7 +332,46 @@ const JS_APP = `
     return d.innerHTML;
   }
 
-  function navigateTo(page) {
+  function isPageEdited(page) {
+    return editedPages[page] && editedPages[page].original !== editedPages[page].edited;
+  }
+
+  function checkAndNavigate(page) {
+    // If in edit mode and current page has unsaved changes, ask user
+    if (editMode && isPageEdited(activePage)) {
+      pendingNavigateTo = page;
+      var confirmed = confirm('当前页面有未保存的修改，是否保存？');
+      if (confirmed) {
+        // Save current page first
+        saveCurrentPageSilent();
+        // Then navigate after a short delay
+        setTimeout(function() { doNavigate(page); }, 50);
+      } else {
+        // Discard changes and navigate
+        discardCurrentEdit();
+        doNavigate(page);
+      }
+    } else {
+      doNavigate(page);
+    }
+  }
+
+  function discardCurrentEdit() {
+    // Discard current page's changes only, keep other pages' edits
+    if (editedPages[activePage]) {
+      editedPages[activePage].edited = editedPages[activePage].original;
+    }
+    editMode = false;
+    // Reset to normal state: show edit and download, hide cancel and save
+    document.getElementById('edit-toolbar').classList.remove('hidden');
+    document.getElementById('btn-edit').classList.remove('hidden');
+    document.getElementById('btn-cancel').classList.add('hidden');
+    document.getElementById('btn-save-page').classList.add('hidden');
+    document.getElementById('btn-download').classList.remove('hidden');
+    // Note: don't update localStorage here to preserve other pages' edits
+  }
+
+  function doNavigate(page) {
     activePage = page;
     location.hash = encodeURIComponent(page);
 
@@ -307,37 +392,323 @@ const JS_APP = `
       return;
     }
 
-    contentEl.innerHTML = marked.parse(md);
-
-    // Rewrite .md links to hash navigation
-    var links = contentEl.querySelectorAll('a[href]');
-    for (var i = 0; i < links.length; i++) {
-      var href = links[i].getAttribute('href');
-      if (href && href.endsWith('.md') && href.indexOf('://') === -1) {
-        var slug = href.replace(/\\.md$/, '');
-        links[i].setAttribute('href', '#' + encodeURIComponent(slug));
-        (function(s) {
-          links[i].addEventListener('click', function(e) {
-            e.preventDefault();
-            navigateTo(s);
-          });
-        })(slug);
+    // If in edit mode, show editor for current page, otherwise show preview
+    if (editMode) {
+      // Show editor with existing content (or original if not edited)
+      var existingData = editedPages[page];
+      var contentToEdit = existingData ? existingData.edited : md;
+      if (!editedPages[page]) {
+        editedPages[page] = { original: md, edited: md };
       }
-    }
+      var editorHtml = '<div class="editor-wrapper active">';
+      editorHtml += '<textarea class="editor-textarea" id="editor-textarea" placeholder="在这里编辑 Markdown 内容...">' + escH(contentToEdit) + '</textarea>';
+      editorHtml += '</div>';
+      contentEl.innerHTML = editorHtml;
+      updateEditHint();
+    } else {
+      // Use edited content if this page has been edited, otherwise use original
+      var displayMd = md;
+      if (editedPages[page] && editedPages[page].original !== editedPages[page].edited) {
+        displayMd = editedPages[page].edited;
+      }
+      contentEl.innerHTML = marked.parse(displayMd);
 
-    // Convert mermaid code blocks into mermaid divs
-    var mermaidBlocks = contentEl.querySelectorAll('pre code.language-mermaid');
-    for (var i = 0; i < mermaidBlocks.length; i++) {
-      var pre = mermaidBlocks[i].parentElement;
-      var div = document.createElement('div');
-      div.className = 'mermaid';
-      div.textContent = mermaidBlocks[i].textContent;
-      pre.parentNode.replaceChild(div, pre);
+      // Rewrite .md links to hash navigation
+      var links = contentEl.querySelectorAll('a[href]');
+      for (var i = 0; i < links.length; i++) {
+        var href = links[i].getAttribute('href');
+        if (href && href.endsWith('.md') && href.indexOf('://') === -1) {
+          var slug = href.replace(/\\.md$/, '');
+          links[i].setAttribute('href', '#' + encodeURIComponent(slug));
+          (function(s) {
+            links[i].addEventListener('click', function(e) {
+              e.preventDefault();
+              checkAndNavigate(s);
+            });
+          })(slug);
+        }
+      }
+
+      // Convert mermaid code blocks into mermaid divs
+      var mermaidBlocks = contentEl.querySelectorAll('pre code.language-mermaid');
+      for (var i = 0; i < mermaidBlocks.length; i++) {
+        var pre = mermaidBlocks[i].parentElement;
+        var div = document.createElement('div');
+        div.className = 'mermaid';
+        div.textContent = mermaidBlocks[i].textContent;
+        pre.parentNode.replaceChild(div, pre);
+      }
+      try { mermaid.run({ querySelector: '.mermaid' }); } catch(e) {}
     }
-    try { mermaid.run({ querySelector: '.mermaid' }); } catch(e) {}
 
     window.scrollTo(0, 0);
     document.getElementById('sidebar').classList.remove('open');
   }
+
+  function getEditedCount() {
+    var count = 0;
+    for (var slug in editedPages) {
+      // Only count pages that are actually edited (different from original)
+      if (editedPages[slug].original !== editedPages[slug].edited) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  function updateEditHint() {
+    var hint = document.getElementById('edit-hint');
+    if (!hint) return;
+    var count = getEditedCount();
+    if (count === 0) {
+      hint.textContent = '';
+    } else if (count === 1) {
+      hint.textContent = '已编辑 1 个页面';
+    } else {
+      hint.textContent = '已编辑 ' + count + ' 个页面';
+    }
+  }
+
+  function saveEditsToStorage() {
+    try {
+      var data = {};
+      for (var slug in editedPages) {
+        if (editedPages[slug].original !== editedPages[slug].edited) {
+          data[slug] = editedPages[slug].edited;
+        }
+      }
+      if (Object.keys(data).length > 0) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      } else {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    } catch(e) {
+      console.warn('Could not save edits to localStorage:', e);
+    }
+  }
+
+  function loadEditsFromStorage() {
+    try {
+      var saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        var data = JSON.parse(saved);
+        for (var slug in data) {
+          if (PAGES[slug] !== undefined) {
+            editedPages[slug] = { original: PAGES[slug], edited: data[slug] };
+          }
+        }
+      }
+    } catch(e) {
+      console.warn('Could not load edits from localStorage:', e);
+    }
+  }
+
+  function clearEditsFromStorage() {
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
+  function clearSaved() {
+    if (confirm('确定要清除所有已保存的修改吗？此操作不可撤销。')) {
+      clearEditsFromStorage();
+      editedPages = {};
+      updateEditHint();
+      // Refresh current page
+      doNavigate(activePage);
+      // Show feedback
+      var successDiv = document.createElement('div');
+      successDiv.className = 'save-success';
+      successDiv.textContent = '已清除';
+      successDiv.style.background = '#dc2626';
+      document.body.appendChild(successDiv);
+      setTimeout(function() { successDiv.remove(); }, 1500);
+    }
+  }
+
+  function saveCurrentPageSilent() {
+    var textarea = document.getElementById('editor-textarea');
+    if (!textarea) return;
+    var page = activePage;
+    if (!editedPages[page]) {
+      editedPages[page] = { original: PAGES[page] || '', edited: '' };
+    }
+    editedPages[page].edited = textarea.value;
+    updateEditHint();
+  }
+
+  function saveCurrentPage() {
+    saveCurrentPageSilent();
+
+    // Save to localStorage
+    saveEditsToStorage();
+
+    // Exit edit mode and show preview
+    editMode = false;
+
+    // Show toolbar with edit and download, hide cancel/save
+    document.getElementById('edit-toolbar').classList.remove('hidden');
+    document.getElementById('btn-edit').classList.remove('hidden');
+    document.getElementById('btn-cancel').classList.add('hidden');
+    document.getElementById('btn-save-page').classList.add('hidden');
+    document.getElementById('btn-download').classList.remove('hidden');
+
+    // Navigate back to current page to show preview
+    doNavigate(activePage);
+
+    // Show saved feedback
+    var successDiv = document.createElement('div');
+    successDiv.className = 'save-success';
+    successDiv.textContent = '已保存';
+    document.body.appendChild(successDiv);
+    setTimeout(function() { successDiv.remove(); }, 1500);
+  }
+
+  function downloadAll() {
+    // Save current page first (silent, no mode change)
+    saveCurrentPageSilent();
+
+    // Save to localStorage
+    saveEditsToStorage();
+
+    // Exit edit mode
+    editMode = false;
+
+    // Show toolbar with edit and download, hide cancel/save
+    document.getElementById('edit-toolbar').classList.remove('hidden');
+    document.getElementById('btn-edit').classList.remove('hidden');
+    document.getElementById('btn-cancel').classList.add('hidden');
+    document.getElementById('btn-save-page').classList.add('hidden');
+    document.getElementById('btn-download').classList.remove('hidden');
+
+    // Check if there are any edits to download
+    var count = getEditedCount();
+    if (count === 0) {
+      alert('没有需要保存的修改');
+      return;
+    }
+
+    // Update PAGES with all edited content
+    for (var slug in editedPages) {
+      PAGES[slug] = editedPages[slug].edited;
+    }
+
+    // Generate new HTML with updated content
+    var newHtml = generateDownloadHtml();
+
+    // Download the new HTML file
+    var blob = new Blob([newHtml], { type: 'text/html' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'index.html';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function enterEditMode() {
+    editMode = true;
+
+    // Show toolbar with cancel and save only, hide edit and download
+    document.getElementById('edit-toolbar').classList.remove('hidden');
+    document.getElementById('btn-edit').classList.add('hidden');
+    document.getElementById('btn-cancel').classList.remove('hidden');
+    document.getElementById('btn-save-page').classList.remove('hidden');
+    document.getElementById('btn-download').classList.add('hidden');
+
+    // Show editor for current page
+    var contentEl = document.getElementById('content');
+    var md = PAGES[activePage] || '';
+
+    if (!editedPages[activePage]) {
+      editedPages[activePage] = { original: md, edited: md };
+    }
+
+    var editorHtml = '<div class="editor-wrapper active">';
+    editorHtml += '<textarea class="editor-textarea" id="editor-textarea" placeholder="在这里编辑 Markdown 内容...">' + escH(editedPages[activePage].edited) + '</textarea>';
+    editorHtml += '</div>';
+    contentEl.innerHTML = editorHtml;
+
+    updateEditHint();
+  }
+
+  function cancelEditMode() {
+    editMode = false;
+
+    // Show toolbar with edit and download, hide cancel/save
+    document.getElementById('edit-toolbar').classList.remove('hidden');
+    document.getElementById('btn-edit').classList.remove('hidden');
+    document.getElementById('btn-cancel').classList.add('hidden');
+    document.getElementById('btn-save-page').classList.add('hidden');
+    document.getElementById('btn-download').classList.remove('hidden');
+
+    // Refresh page to exit edit mode and show preview
+    doNavigate(activePage);
+  }
 })();
+
+// Helper function outside the IIFE to generate download HTML
+// This avoids JSON.stringify issues with regex patterns in JS_APP_SOURCE
+function generateDownloadHtml() {
+  // Use string split/join to avoid regex issues
+  var escScript = function(s) {
+    return s.split('<script').join('<scr" + "ipt').split('</script').join('</scr" + "ipt');
+  };
+  var escH = function(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  };
+
+  var pagesJson = escScript(JSON.stringify(PAGES));
+  var treeJson = escScript(JSON.stringify(TREE));
+  var metaJson = escScript(JSON.stringify(META));
+
+  // Use JS_APP_SOURCE directly since activePage is now global
+  var jsAppSource = JS_APP_SOURCE;
+
+  var html = '<!DOCTYPE html>';
+  html += '<html lang="en">';
+  html += '<head>';
+  html += '<meta charset="UTF-8">';
+  html += '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+  html += '<title>' + escH(document.title) + '</title>';
+  html += '<script src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"><\\/script>';
+  html += '<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"><\\/script>';
+  html += '<style>' + document.querySelector('style').textContent + '<\\/style>';
+  html += '</head>';
+  html += '<body>';
+  html += '<button class="menu-toggle" id="menu-toggle" aria-label="Toggle menu">&#9776;</button>';
+  html += '<div class="edit-toolbar" id="edit-toolbar">';
+  html += '<button class="btn-secondary hidden" id="btn-cancel">取消</button>';
+  html += '<span class="edit-hint" id="edit-hint"></span>';
+  html += '<button class="btn-secondary hidden" id="btn-save-page">保存本页</button>';
+  html += '<button class="btn-save" id="btn-download">下载全部</button>';
+  html += '<button class="btn-secondary" id="btn-clear">清除已保存</button>';
+  html += '<button class="btn-edit" id="btn-edit">编辑</button>';
+  html += '</div>';
+  html += '<div class="layout">';
+  html += '<nav class="sidebar" id="sidebar">';
+  html += '<div class="sidebar-header">';
+  html += '<div class="sidebar-title"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg>' + escH(document.querySelector('.sidebar-title').textContent) + '</div>';
+  html += '<div class="sidebar-meta" id="meta-info"></div>';
+  html += '</div>';
+  html += '<div id="nav-tree"></div>';
+  html += '<div class="sidebar-footer">Generated by GitNexus</div>';
+  html += '</nav>';
+  html += '<main class="content" id="content">';
+  html += '<div class="empty-state"><h2>Loading…</h2></div>';
+  html += '</main>';
+  html += '</div>';
+  html += '<script>';
+  html += 'var PAGES = ' + pagesJson + ';';
+  html += 'var TREE = ' + treeJson + ';';
+  html += 'var META = ' + metaJson + ';';
+  html += 'var JS_APP_SOURCE = ' + JSON.stringify(JS_APP_SOURCE) + ';';
+  html += jsAppSource;
+  html += '<\\/script>';
+  html += '</body>';
+  html += '</html>';
+  return html;
+}
 `;
