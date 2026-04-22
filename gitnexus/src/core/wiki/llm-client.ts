@@ -7,7 +7,24 @@
  * Config priority: CLI flags > env vars > defaults
  */
 
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import {
+  ProxyAgent,
+  fetch as undiciFetch,
+  setGlobalDispatcher,
+  getGlobalDispatcher,
+  Agent,
+} from 'undici';
+
+// Set global dispatcher timeout to 0 (no timeout) on module load
+const globalDispatcher = getGlobalDispatcher();
+if (globalDispatcher instanceof Agent) {
+  // Create a new Agent with no timeout and copy connections from existing dispatcher
+  const noTimeoutDispatcher = new Agent({
+    bodyTimeout: 0,
+    headersTimeout: 0,
+  });
+  setGlobalDispatcher(noTimeoutDispatcher);
+}
 
 export type LLMProvider = 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
 
@@ -24,7 +41,12 @@ function getProxyAgent(explicitProxyUrl?: string): ProxyAgent | null {
     process.env.HTTPS_PROXY;
 
   if (proxyUrl) {
-    return new ProxyAgent(proxyUrl);
+    // Create ProxyAgent with no timeout limits
+    return new ProxyAgent({
+      uri: proxyUrl,
+      bodyTimeout: 0,
+      headersTimeout: 0,
+    });
   }
   return null;
 }
@@ -204,6 +226,9 @@ export async function callLLM(
         },
         body: JSON.stringify(body),
         dispatcher: proxyAgent ?? undefined,
+        bodyTimeout: 0,
+        headersTimeout: 0,
+        keepAliveTimeout: 0,
       } as any);
 
       if (!response.ok) {
@@ -251,7 +276,9 @@ export async function callLLM(
       }
 
       // Clean up reasoning content from models that include <thinking> or 【】 tags
-      let content = choice.message.content.replace(/<thinking>[\s\S]*?<\/thinking>|【 thinking 】[\s\S]*?【\/ thinking 】/gi, '').trim();
+      const content = choice.message.content
+        .replace(/<thinking>[\s\S]*?<\/thinking>|【 thinking 】[\s\S]*?【\/ thinking 】/gi, '')
+        .trim();
 
       return {
         content,
@@ -264,7 +291,14 @@ export async function callLLM(
       const errCode = err.code || 'unknown';
 
       // Network error — retry with backoff
-      const isRetryable = errCode === 'ECONNREFUSED' || errCode === 'ETIMEDOUT' || errMsg.includes('fetch') || errMsg.includes('ECONNREFUSED') || errMsg.includes('timeout');
+      const isRetryable =
+        errCode === 'ECONNREFUSED' ||
+        errCode === 'ETIMEDOUT' ||
+        errMsg.includes('fetch') ||
+        errMsg.includes('ECONNREFUSED') ||
+        errMsg.includes('timeout') ||
+        errMsg.includes('aborted') ||
+        errMsg.includes('socket');
 
       if (attempt < MAX_RETRIES - 1 && isRetryable) {
         await sleep((attempt + 1) * 3000);
@@ -339,7 +373,9 @@ async function readSSEStream(
   }
 
   // Clean up reasoning content from models that include <thinking> or 【】 tags
-  content = content.replace(/<thinking>[\s\S]*?<\/thinking>|【 thinking 】[\s\S]*?【\/ thinking 】/gi, '').trim();
+  content = content
+    .replace(/<thinking>[\s\S]*?<\/thinking>|【 thinking 】[\s\S]*?【\/ thinking 】/gi, '')
+    .trim();
 
   return { content };
 }
