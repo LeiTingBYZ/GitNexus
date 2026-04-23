@@ -95,6 +95,7 @@ program
   .option('--gist', 'Publish wiki as a public GitHub Gist after generation')
   .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
   .option('--review', 'Stop after grouping to review module structure before generating pages')
+  .option('--format <type>', 'Output format: both (default), html, or markdown')
   .action(createLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program

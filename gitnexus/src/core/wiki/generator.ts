@@ -27,7 +27,7 @@ import {
   getInterModuleEdgesForOverview,
   type FileWithExports,
 } from './graph-queries.js';
-import { generateHTMLViewer } from './html-viewer.js';
+import { generateHTMLViewer, generateMarkdownViewer } from './html-viewer.js';
 
 import {
   callLLM,
@@ -65,6 +65,8 @@ export interface WikiOptions {
   concurrency?: number;
   /** If true, stop after building module tree for user review */
   reviewOnly?: boolean;
+  /** Output format: 'html' (interactive), 'markdown' (git-friendly), or 'both' (default) */
+  format?: 'html' | 'markdown' | 'both';
 }
 
 export interface WikiMeta {
@@ -277,9 +279,21 @@ export class WikiGenerator {
     const hasMd = dirEntries.some((f) => f.endsWith('.md'));
     if (!hasMd) return;
 
-    this.onProgress('html', 98, 'Building HTML viewer...');
+    const format = this.options.format || 'both';
     const repoName = path.basename(this.repoPath);
-    await generateHTMLViewer(this.wikiDir, repoName);
+
+    if (format === 'both') {
+      this.onProgress('html', 97, 'Building HTML viewer...');
+      await generateHTMLViewer(this.wikiDir, repoName);
+      this.onProgress('html', 98, 'Writing Markdown files...');
+      await generateMarkdownViewer(this.wikiDir, repoName);
+    } else if (format === 'markdown') {
+      this.onProgress('html', 98, 'Writing Markdown files...');
+      await generateMarkdownViewer(this.wikiDir, repoName);
+    } else {
+      this.onProgress('html', 98, 'Building HTML viewer...');
+      await generateHTMLViewer(this.wikiDir, repoName);
+    }
   }
 
   // ─── Full Generation ────────────────────────────────────────────────

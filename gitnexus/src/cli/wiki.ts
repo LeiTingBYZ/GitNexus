@@ -32,6 +32,7 @@ export interface WikiCommandOptions {
   provider?: LLMProvider;
   verbose?: boolean;
   review?: boolean;
+  format?: 'html' | 'markdown';
 }
 
 /**
@@ -382,6 +383,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     force: options?.force,
     concurrency: options?.concurrency ? parseInt(options.concurrency, 10) : undefined,
     reviewOnly: options?.review,
+    format: options?.format,
   };
 
   const generator = new WikiGenerator(
@@ -409,7 +411,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
     const wikiDir = path.join(storagePath, 'wiki');
-    const viewerPath = path.join(wikiDir, 'index.html');
+    const wikiFormat = options?.format || 'both';
     const treeFile = path.join(wikiDir, 'module_tree.json');
 
     // Review mode: show module tree and ask for confirmation
@@ -502,9 +504,10 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
       const totalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
       console.log(`\n  Wiki generated successfully (${totalElapsed}s)\n`);
       console.log(`  Mode: ${continueResult.mode}`);
+      console.log(`  Format: ${wikiFormat}`);
       console.log(`  Pages: ${continueResult.pagesGenerated}`);
       console.log(`  Output: ${wikiDir}`);
-      console.log(`  Viewer: ${viewerPath}`);
+      printViewerPaths(wikiFormat, wikiDir);
 
       if (continueResult.failedModules && continueResult.failedModules.length > 0) {
         console.log(`\n  Failed modules (${continueResult.failedModules.length}):`);
@@ -514,7 +517,9 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
       }
 
       console.log('');
-      await maybePublishGist(viewerPath, options?.gist);
+      if (wikiFormat !== 'markdown') {
+        await maybePublishGist(path.join(wikiDir, 'index.html'), options?.gist);
+      }
       return;
     }
 
@@ -522,16 +527,21 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
 
     if (result.mode === 'up-to-date' && !options?.force) {
       console.log('\n  Wiki is already up to date.');
-      console.log(`  Viewer: ${viewerPath}\n`);
-      await maybePublishGist(viewerPath, options?.gist);
+      console.log(`  Output: ${wikiDir}`);
+      printViewerPaths(wikiFormat, wikiDir);
+      console.log('');
+      if (wikiFormat !== 'markdown') {
+        await maybePublishGist(path.join(wikiDir, 'index.html'), options?.gist);
+      }
       return;
     }
 
     console.log(`\n  Wiki generated successfully (${elapsed}s)\n`);
     console.log(`  Mode: ${result.mode}`);
+    console.log(`  Format: ${wikiFormat}`);
     console.log(`  Pages: ${result.pagesGenerated}`);
     console.log(`  Output: ${wikiDir}`);
-    console.log(`  Viewer: ${viewerPath}`);
+    printViewerPaths(wikiFormat, wikiDir);
 
     if (result.failedModules && result.failedModules.length > 0) {
       console.log(`\n  Failed modules (${result.failedModules.length}):`);
@@ -543,7 +553,9 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
 
     console.log('');
 
-    await maybePublishGist(viewerPath, options?.gist);
+    if (wikiFormat !== 'markdown') {
+      await maybePublishGist(path.join(wikiDir, 'index.html'), options?.gist);
+    }
   } catch (err: any) {
     clearInterval(elapsedTimer);
     bar.stop();
@@ -589,6 +601,20 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     process.exitCode = 1;
   }
 };
+
+// ─── Helper Functions ──────────────────────────────────────────────────
+
+function printViewerPaths(format: string, wikiDir: string): void {
+  const htmlPath = path.join(wikiDir, 'index.html');
+  const mdPath = path.join(wikiDir, 'index.md');
+
+  if (format === 'both' || format === 'html') {
+    console.log(`  HTML:   ${htmlPath}`);
+  }
+  if (format === 'both' || format === 'markdown') {
+    console.log(`  Markdown: ${mdPath}`);
+  }
+}
 
 // ─── Gist Publishing ───────────────────────────────────────────────────
 

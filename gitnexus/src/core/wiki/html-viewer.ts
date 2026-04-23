@@ -1,8 +1,9 @@
 /**
- * HTML Viewer Generator for Wiki
+ * Wiki Viewer Generator
  *
- * Produces a self-contained index.html that embeds all markdown pages,
- * module tree, and metadata — viewable offline in any browser.
+ * Generates either:
+ * - HTML: self-contained index.html with embedded pages (interactive editing)
+ * - Markdown: index.md + individual module .md files (easy to diff with git)
  */
 
 import fs from 'fs/promises';
@@ -13,6 +14,11 @@ interface ModuleTreeNode {
   slug: string;
   files: string[];
   children?: ModuleTreeNode[];
+}
+
+interface WikiPage {
+  slug: string;
+  content: string;
 }
 
 /**
@@ -49,6 +55,187 @@ export async function generateHTMLViewer(wikiDir: string, projectName: string): 
   const outputPath = path.join(wikiDir, 'index.html');
   await fs.writeFile(outputPath, html, 'utf-8');
   return outputPath;
+}
+
+/**
+ * Generate the wiki as Markdown files (index.md + individual .md files).
+ * This format is easy to diff with git and edit directly.
+ */
+export async function generateMarkdownViewer(
+  wikiDir: string,
+  projectName: string,
+): Promise<string> {
+  // Load module tree
+  let moduleTree: ModuleTreeNode[] = [];
+  try {
+    const raw = await fs.readFile(path.join(wikiDir, 'module_tree.json'), 'utf-8');
+    moduleTree = JSON.parse(raw);
+  } catch {
+    /* will show empty nav */
+  }
+
+  // Load meta
+  let meta: Record<string, unknown> | null = null;
+  try {
+    const raw = await fs.readFile(path.join(wikiDir, 'meta.json'), 'utf-8');
+    meta = JSON.parse(raw);
+  } catch {
+    /* no meta */
+  }
+
+  // Read all markdown files into a { slug: content } map
+  const pages: Record<string, string> = {};
+  const dirEntries = await fs.readdir(wikiDir);
+  for (const f of dirEntries.filter((f) => f.endsWith('.md'))) {
+    const content = await fs.readFile(path.join(wikiDir, f), 'utf-8');
+    pages[f.replace(/\.md$/, '')] = content;
+  }
+
+  // Build markdown index
+  const indexMd = buildMarkdownIndex(projectName, moduleTree, pages, meta);
+
+  // Write index.md
+  const indexPath = path.join(wikiDir, 'index.md');
+  await fs.writeFile(indexPath, indexMd, 'utf-8');
+
+  return indexPath;
+}
+
+/**
+ * Build the Markdown index file content.
+ */
+function buildMarkdownIndex(
+  projectName: string,
+  moduleTree: ModuleTreeNode[],
+  pages: Record<string, string>,
+  meta: Record<string, unknown> | null,
+): string {
+  const parts: string[] = [];
+
+  // Header
+  parts.push(`# ${projectName} — Wiki`);
+  parts.push('');
+
+  // Meta info
+  if (meta) {
+    if (meta.generatedAt) {
+      parts.push(`> Generated: ${new Date(meta.generatedAt as string).toLocaleString()}`);
+    }
+    if (meta.model) {
+      parts.push(`> Model: ${meta.model}`);
+    }
+    if (meta.fromCommit) {
+      parts.push(`> From commit: ${meta.fromCommit as string}`);
+    }
+    parts.push('');
+  }
+
+  // Table of contents
+  parts.push('## Table of Contents');
+  parts.push('');
+  parts.push('- [Overview](#overview)');
+  if (moduleTree.length > 0) {
+    parts.push('');
+    parts.push('## Modules');
+    buildModuleToc(moduleTree, parts, 0);
+  }
+  parts.push('');
+  parts.push('---');
+  parts.push('');
+
+  // Divider with links
+  parts.push('## Quick Links');
+  parts.push('');
+  parts.push('| Module | File |');
+  parts.push('|--------|------|');
+  parts.push('| Overview | [overview.md](./overview.md) |');
+  if (moduleTree.length > 0) {
+    buildModuleLinks(moduleTree, parts);
+  }
+  parts.push('');
+  parts.push('---');
+  parts.push('');
+
+  // All page contents inline
+  parts.push('## Full Content');
+  parts.push('');
+  parts.push('> **Note:** This file contains all wiki content for reference. ');
+  parts.push('> For better readability, open the individual .md files listed above.');
+  parts.push('');
+  parts.push('---');
+  parts.push('');
+
+  // Overview content
+  if (pages['overview']) {
+    parts.push('### Overview');
+    parts.push('');
+    parts.push(pages['overview']);
+    parts.push('');
+  }
+
+  // Module contents
+  if (moduleTree.length > 0) {
+    buildModuleContent(moduleTree, pages, parts);
+  }
+
+  return parts.join('\n');
+}
+
+/**
+ * Build table of contents entries for modules.
+ */
+function buildModuleToc(nodes: ModuleTreeNode[], parts: string[], depth: number): void {
+  const indent = '  '.repeat(depth);
+  const bullet = depth === 0 ? '-' : '-';
+
+  for (const node of nodes) {
+    parts.push(`${indent}${bullet} [${node.name}](#${node.slug})`);
+    if (node.children && node.children.length > 0) {
+      buildModuleToc(node.children, parts, depth + 1);
+    }
+  }
+}
+
+/**
+ * Build table links for modules.
+ */
+function buildModuleLinks(nodes: ModuleTreeNode[], parts: string[]): void {
+  for (const node of nodes) {
+    parts.push(`| ${node.name} | [${node.slug}.md](./${node.slug}.md) |`);
+    if (node.children && node.children.length > 0) {
+      buildModuleLinks(node.children, parts);
+    }
+  }
+}
+
+/**
+ * Build content sections for modules.
+ */
+function buildModuleContent(
+  nodes: ModuleTreeNode[],
+  pages: Record<string, string>,
+  parts: string[],
+): void {
+  for (const node of nodes) {
+    parts.push(`### ${node.name}`);
+    parts.push('');
+
+    if (pages[node.slug]) {
+      parts.push(pages[node.slug]);
+    } else {
+      parts.push(`*Content for ${node.slug} not found.*`);
+    }
+
+    parts.push('');
+    parts.push(`[Back to top](#table-of-contents)`);
+    parts.push('');
+    parts.push('---');
+    parts.push('');
+
+    if (node.children && node.children.length > 0) {
+      buildModuleContent(node.children, pages, parts);
+    }
+  }
 }
 
 // ─── HTML Builder ───────────────────────────────────────────────────────
