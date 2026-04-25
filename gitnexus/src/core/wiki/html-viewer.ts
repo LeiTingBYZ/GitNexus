@@ -272,7 +272,7 @@ function buildHTML(
   parts.push('<title>' + esc(projectName) + ' — Wiki</title>');
   parts.push('<script src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"><\/script>');
   parts.push(
-    '<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"><\/script>',
+    '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"><\/script>',
   );
   parts.push('<style>');
   parts.push(CSS);
@@ -871,7 +871,7 @@ function generateDownloadHtml() {
   html += '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
   html += '<title>' + escH(document.title) + '</title>';
   html += '<script src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"><\\/script>';
-  html += '<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"><\\/script>';
+  html += '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"><\\/script>';
   html += '<style>' + document.querySelector('style').textContent + '<\\/style>';
   html += '</head>';
   html += '<body>';
