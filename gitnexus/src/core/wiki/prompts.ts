@@ -50,15 +50,62 @@ Rules:
 - Write for a developer who needs to understand and contribute to this code
 - Write all documentation content in Chinese (中文)
 
+[STRICT] When generating Mermaid diagrams, you MUST follow ALL rules below. Invalid Mermaid syntax will break rendering.
+
 IMPORTANT Mermaid Diagram Rules:
-- For sequence diagrams, use ONLY simple participant labels without "as" keyword, e.g., \`participant Main\` instead of \`participant Main as ByteD03BMCMain\`
+
+**1. subgraph 与内部节点 ID 分离（避免循环引用）(CRITICAL)**
+- NEVER use the same ID for a subgraph and a node inside it
+- If subgraph is \`subgraph sensor["传感器"]\`, nodes inside MUST use different IDs like \`sensor_node["数据"]\` or \`sensor_file["sensor.hpp"]\`
+- Node IDs inside a subgraph must be UNIQUE within the entire diagram, not just within the subgraph
+
+**2. Sequence Diagram 消息文本安全(CRITICAL)**
+- Message text after the colon is parsed as plain text, but Mermaid may still tokenize it
+- Do NOT include any participant ID or reserved keywords in message text, even if they're not at the start
+- Rewrite messages to avoid mentioning participant names: instead of "调用 X 模块" write "执行配置" or "获取参数"
+- The message text should describe the action, not reference which participant is being called
+
+**3. 规避保留关键字(CRITICAL)**
+- Do NOT use Mermaid reserved keywords as Participant or Node IDs
+- Forbidden IDs: box, end, title, acc_title, acc_descr, graph, subgraph, flowchart, sequenceDiagram, classDiagram, stateDiagram, erDiagram, pie, gantt, gitGraph, journey, requirementDiagram, link, style, class, click, callback
+- SPECIFIC FORBIDDEN IDS:
+    - "session" (Reserved in Gantt/Journey) -> Use "sess", "user_session", or "mySession"
+    - "box"/"Box"/"BOX" (Reserved in Sequence, case-insensitive) -> Use "device", "target", "node", "unit"
+    - CRITICAL: ANY string containing "box" (e.g., "GPUBox", "mbox", "sandbox") will be tokenized as "box" and fail. Do NOT use any ID containing "box" in any case
+    - "struct" (Not a valid Mermaid keyword) -> ALWAYS use "class" to define structures
+    - "create", "destroy", "activate", "deactivate" (Reserved in Sequence)
+
+**4. 特殊字符与文本安全**
+- ALWAYS wrap Node Labels in double quotes if they contain: parentheses \`()\`, brackets \`[]\`, HTML tags \`<br/>\`, special symbols \`+, -, *, /\`
+- Use \`ID["read()"]\` instead of \`ID[read()]\`, use \`TM["Timer<br/>1s"]\` instead of \`TM[Timer<br/>1s]\`
+
+**5. 图表特定语法规则(CRITICAL)**
+- CLASS DIAGRAM: When defining Stereotypes (like enumeration, interface), place <<Type>> INSIDE the class block, NOT after the "class" keyword.
+  - Correct: class MyClass { <<enumeration>> +Value }
+  - Wrong: class <<enumeration>> MyClass { ... }
+
+- CRITICAL: Mermaid does NOT support \`struct\` keyword. NEVER use \`struct\` in any diagram. ALWAYS use \`class\` instead.
+    - WRONG: \`struct IpmiMsgReq { +netfn: uint8_t }\`
+    - CORRECT: \`class IpmiMsgReq { +netfn: uint8_t }\`
+    - This applies to ALL struct-like types: C structs, data classes, DTOs, value objects, etc.
+- STEREOTYPE PLACEMENT: When defining Stereotypes (like enumeration, interface), place \`<<Type>>\` INSIDE the class block, on the first line.
+    - Wrong: \`class <<enumeration>> session { ... }\`
+    - Correct: \`class session { <<enumeration>> ... }\`
+- NAMESPACE SYNTAX: Ensure \`namespace\` wraps the classes correctly.
+    - Syntax: \`namespace Name { class MyClass { ... } }\`
+    - Do NOT nest namespaces inside other namespaces in a classDiagram
+    - Do NOT reference types with \`::\` (e.g., \`std::string\`). Use simple names like \`stdString\`
+
+**6. 通用防错**
 - Use quotes around labels that contain special characters: \`participant Main as "主函数(ByteD03BMCMain)"\` or \`participant Main["ByteD03BMCMain"]\`
 - Avoid using parentheses () in participant labels without proper escaping
 - When using flowcharts, always quote node labels that contain function names: \`A["functionName()"]\`
 - CRITICAL: Always quote node labels that contain square brackets \`[]\`, brackets \`()\`, angle brackets \`<>\`, or curly braces \`{}\`: use \`A["array[index]"]\` instead of \`A[array[index]]\`, use \`A["function()"]\` instead of \`A[function()]\`, use \`A["GET /path/{id}"]\` instead of \`A[GET /path/{id}]\`
 - CRITICAL: Do NOT use non-standard diagram types like \`flashmap\`. Use only standard mermaid diagram types: \`graph\`, \`flowchart\`, \`sequenceDiagram\`, \`classDiagram\`, \`stateDiagram-v2\`, \`erDiagram\`, \`pie\`, \`gantt\`, \`gitGraph\`, \`requirementDiagram\`, or \`journey\`. For memory/flash layout visualizations, use \`graph TB\` or \`flowchart TB\`
 - Message text can be in Chinese but avoid colons in message text
-- CRITICAL: Do NOT use participant names that are mermaid keywords (create, loop, alt, else, opt, par, break, critical, section, exclude, optional, iteractor). For example, instead of \`Create->>Create\`, use \`Creator->>Creator\` or \`ThreadCreate->>ThreadCreate\` (avoid "Create" as participant name)`;
+- CRITICAL: Do NOT use participant names that are mermaid keywords (create, loop, alt, else, opt, par, break, critical, section, exclude, optional, iteractor). For example, instead of \`Create->>Create\`, use \`Creator->>Creator\` or \`ThreadCreate->>ThreadCreate\` (avoid "Create" as participant name)
+- CRITICAL: In classDiagram, do NOT use \`::\` in relationship targets. Use simple identifiers: \`A ..> B\` not \`A ..> sdbusplus::asio::connection\`. Use \`A ..> SdbusConnection\` or put the dependency label as text
+- Note syntax: Use \`Note right of A\` or \`Note left of A\`, NOT \`Note over A,B,C\` with commas. For multiple participants, use separate Note statements`;
 
 export const MODULE_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module.
 
@@ -75,7 +122,16 @@ Execution flows: {{PROCESSES}}
 
 ---
 
-Write comprehensive documentation for this module. Cover its purpose, how it works, its key components, and how it connects to the rest of the codebase. Use whatever structure best fits this module — you decide the sections and headings. Include a Mermaid diagram only if it genuinely clarifies the architecture.`;
+Write comprehensive documentation for this module. Cover its purpose, how it works, its key components, and how it connects to the rest of the codebase. Use whatever structure best fits this module — you decide the sections and headings. Include a Mermaid diagram only if it genuinely clarifies the architecture.
+
+Mermaid Rules Reminder:
+**[CRITICAL - VIOLATIONS WILL BREAK RENDERING]**
+1. subgraph ID and node IDs inside it must be DIFFERENT: if you write \`subgraph test\`, never use \`test\` as a node ID inside
+2. Do NOT nest namespaces in classDiagram (namespace cannot contain another namespace)
+3. NEVER use "struct" - always use "class"
+4. Do NOT use "box" in any form (Box, GPUBox, etc.) - reserved keyword
+5. Note syntax: \`Note right of A\` NOT \`Note over A,B,C\` with commas
+6. Do NOT use "::" in classDiagram relationship targets`;
 
 // ─── Parent Module Prompt ─────────────────────────────────────────────
 
@@ -90,14 +146,62 @@ Rules:
 - Include a Mermaid diagram only if it genuinely clarifies how the sub-modules relate
 - Write all documentation content in Chinese (中文)
 
+[STRICT] When generating Mermaid diagrams, you MUST follow ALL rules below. Invalid Mermaid syntax will break rendering.
+
 IMPORTANT Mermaid Diagram Rules:
-- For sequence diagrams, use ONLY simple participant labels without "as" keyword, e.g., \`participant Main\` instead of \`participant Main as ByteD03BMCMain\`
+
+**1. subgraph 与内部节点 ID 分离（避免循环引用）(CRITICAL)**
+- NEVER use the same ID for a subgraph and a node inside it
+- If subgraph is \`subgraph sensor["传感器"]\`, nodes inside MUST use different IDs like \`sensor_node["数据"]\` or \`sensor_file["sensor.hpp"]\`
+- Node IDs inside a subgraph must be UNIQUE within the entire diagram, not just within the subgraph
+
+**2. Sequence Diagram 消息文本安全(CRITICAL)**
+- Message text after the colon is parsed as plain text, but Mermaid may still tokenize it
+- Do NOT include any participant ID or reserved keywords in message text, even if they're not at the start
+- Rewrite messages to avoid mentioning participant names: instead of "调用 X 模块" write "执行配置" or "获取参数"
+- The message text should describe the action, not reference which participant is being called
+
+**3. 规避保留关键字(CRITICAL)**
+- Do NOT use Mermaid reserved keywords as Participant or Node IDs
+- Forbidden IDs: box, end, title, acc_title, acc_descr, graph, subgraph, flowchart, sequenceDiagram, classDiagram, stateDiagram, erDiagram, pie, gantt, gitGraph, journey, requirementDiagram, link, style, class, click, callback
+- SPECIFIC FORBIDDEN IDS:
+    - "session" (Reserved in Gantt/Journey) -> Use "sess", "user_session", or "mySession"
+    - "box"/"Box"/"BOX" (Reserved in Sequence, case-insensitive) -> Use "device", "target", "node", "unit"
+    - CRITICAL: ANY string containing "box" (e.g., "GPUBox", "mbox", "sandbox") will be tokenized as "box" and fail. Do NOT use any ID containing "box" in any case
+    - "struct" (Not a valid Mermaid keyword) -> ALWAYS use "class" to define structures
+    - "create", "destroy", "activate", "deactivate" (Reserved in Sequence)
+
+**4. 特殊字符与文本安全**
+- ALWAYS wrap Node Labels in double quotes if they contain: parentheses \`()\`, brackets \`[]\`, HTML tags \`<br/>\`, special symbols \`+, -, *, /\`
+- Use \`ID["read()"]\` instead of \`ID[read()]\`, use \`TM["Timer<br/>1s"]\` instead of \`TM[Timer<br/>1s]\`
+
+**5. 图表特定语法规则(CRITICAL)**
+- CLASS DIAGRAM: When defining Stereotypes (like enumeration, interface), place <<Type>> INSIDE the class block, NOT after the "class" keyword.
+  - Correct: class MyClass { <<enumeration>> +Value }
+  - Wrong: class <<enumeration>> MyClass { ... }
+
+- CRITICAL: Mermaid does NOT support \`struct\` keyword. NEVER use \`struct\` in any diagram. ALWAYS use \`class\` instead.
+    - WRONG: \`struct IpmiMsgReq { +netfn: uint8_t }\`
+    - CORRECT: \`class IpmiMsgReq { +netfn: uint8_t }\`
+    - This applies to ALL struct-like types: C structs, data classes, DTOs, value objects, etc.
+- STEREOTYPE PLACEMENT: When defining Stereotypes (like enumeration, interface), place \`<<Type>>\` INSIDE the class block, on the first line.
+    - Wrong: \`class <<enumeration>> session { ... }\`
+    - Correct: \`class session { <<enumeration>> ... }\`
+- NAMESPACE SYNTAX: Ensure \`namespace\` wraps the classes correctly.
+    - Syntax: \`namespace Name { class MyClass { ... } }\`
+    - Do NOT nest namespaces inside other namespaces in a classDiagram
+    - Do NOT reference types with \`::\` (e.g., \`std::string\`). Use simple names like \`stdString\`
+
+**6. 通用防错**
 - Use quotes around labels that contain special characters: \`participant Main as "主函数(ByteD03BMCMain)"\` or \`participant Main["ByteD03BMCMain"]\`
 - Avoid using parentheses () in participant labels without proper escaping
 - When using flowcharts, always quote node labels that contain function names: \`A["functionName()"]\`
 - CRITICAL: Always quote node labels that contain square brackets \`[]\`, brackets \`()\`, angle brackets \`<>\`, or curly braces \`{}\`: use \`A["array[index]"]\` instead of \`A[array[index]]\`, use \`A["function()"]\` instead of \`A[function()]\`, use \`A["GET /path/{id}"]\` instead of \`A[GET /path/{id}]\`
 - CRITICAL: Do NOT use non-standard diagram types like \`flashmap\`. Use only standard mermaid diagram types: \`graph\`, \`flowchart\`, \`sequenceDiagram\`, \`classDiagram\`, \`stateDiagram-v2\`, \`erDiagram\`, \`pie\`, \`gantt\`, \`gitGraph\`, \`requirementDiagram\`, or \`journey\`. For memory/flash layout visualizations, use \`graph TB\` or \`flowchart TB\`
-- CRITICAL: Do NOT use participant names that are mermaid keywords (create, loop, alt, else, opt, par, break, critical, section, exclude, optional, iteractor). For example, instead of \`Create->>Create\`, use \`Creator->>Creator\` or \`ThreadCreate->>ThreadCreate\``;
+- Message text can be in Chinese but avoid colons in message text
+- CRITICAL: Do NOT use participant names that are mermaid keywords (create, loop, alt, else, opt, par, break, critical, section, exclude, optional, iteractor). For example, instead of \`Create->>Create\`, use \`Creator->>Creator\` or \`ThreadCreate->>ThreadCreate\` (avoid "Create" as participant name)
+- CRITICAL: In classDiagram, do NOT use \`::\` in relationship targets. Use simple identifiers: \`A ..> B\` not \`A ..> sdbusplus::asio::connection\`. Use \`A ..> SdbusConnection\` or put the dependency label as text
+- Note syntax: Use \`Note right of A\` or \`Note left of A\`, NOT \`Note over A,B,C\` with commas. For multiple participants, use separate Note statements`;
 
 export const PARENT_USER_PROMPT = `Write documentation for the **{{MODULE_NAME}}** module, which contains these sub-modules:
 
@@ -108,7 +212,16 @@ Shared execution flows: {{CROSS_PROCESSES}}
 
 ---
 
-Write a concise overview of this module group. Explain its purpose, how the sub-modules fit together, and the key workflows that span them. Link to sub-module pages (e.g. \`[子模块名称](sub-module-slug.md)\`) rather than repeating their content. Use whatever structure fits best.`;
+Write a concise overview of this module group. Explain its purpose, how the sub-modules fit together, and the key workflows that span them. Link to sub-module pages (e.g. \`[子模块名称](sub-module-slug.md)\`) rather than repeating their content. Use whatever structure fits best.
+
+Mermaid Rules Reminder:
+**[CRITICAL - VIOLATIONS WILL BREAK RENDERING]**
+1. subgraph ID and node IDs inside it must be DIFFERENT: if you write \`subgraph test\`, never use \`test\` as a node ID inside
+2. Do NOT nest namespaces in classDiagram (namespace cannot contain another namespace)
+3. NEVER use "struct" - always use "class"
+4. Do NOT use "box" in any form (Box, GPUBox, etc.) - reserved keyword
+5. Note syntax: \`Note right of A\` NOT \`Note over A,B,C\` with commas
+6. Do NOT use "::" in classDiagram relationship targets`;
 
 // ─── Overview Prompt ──────────────────────────────────────────────────
 
@@ -124,13 +237,62 @@ Rules:
 - Use the inter-module edges and execution flow data for accuracy, but do NOT dump them raw
 - Write all documentation content in Chinese (中文)
 
+[STRICT] When generating Mermaid diagrams, you MUST follow ALL rules below. Invalid Mermaid syntax will break rendering.
+
 IMPORTANT Mermaid Diagram Rules:
-- Use quotes around node labels that contain special characters: \`A["ModuleName"]\` instead of \`A[ModuleName]\`
-- Avoid using parentheses () in node labels without proper escaping
-- Keep architecture diagrams simple (max 10 nodes)
-- For sequence diagrams, do NOT use participant names that are mermaid keywords (create, loop, alt, else, opt, par, break, critical, section, exclude, optional)
-- CRITICAL: Always quote node labels that contain square brackets \`[]\`, brackets \`()\`, angle brackets \`<>\`, or curly braces \`{}\`: use \`A["array[index]"]\` instead of \`A[array[index]]\`, use \`A["GET /path/{id}"]\` instead of \`A[GET /path/{id}]\`
-- CRITICAL: Do NOT use non-standard diagram types like \`flashmap\`. Use only standard mermaid diagram types: \`graph\`, \`flowchart\`, \`sequenceDiagram\`, \`classDiagram\`, \`stateDiagram-v2\`, \`erDiagram\`, \`pie\`, \`gantt\`, \`gitGraph\`, \`requirementDiagram\`, or \`journey\``;
+
+**1. subgraph 与内部节点 ID 分离（避免循环引用）(CRITICAL)**
+- NEVER use the same ID for a subgraph and a node inside it
+- If subgraph is \`subgraph sensor["传感器"]\`, nodes inside MUST use different IDs like \`sensor_node["数据"]\` or \`sensor_file["sensor.hpp"]\`
+- Node IDs inside a subgraph must be UNIQUE within the entire diagram, not just within the subgraph
+
+**2. Sequence Diagram 消息文本安全(CRITICAL)**
+- Message text after the colon is parsed as plain text, but Mermaid may still tokenize it
+- Do NOT include any participant ID or reserved keywords in message text, even if they're not at the start
+- Rewrite messages to avoid mentioning participant names: instead of "调用 X 模块" write "执行配置" or "获取参数"
+- The message text should describe the action, not reference which participant is being called
+
+**3. 规避保留关键字(CRITICAL)**
+- Do NOT use Mermaid reserved keywords as Participant or Node IDs
+- Forbidden IDs: box, end, title, acc_title, acc_descr, graph, subgraph, flowchart, sequenceDiagram, classDiagram, stateDiagram, erDiagram, pie, gantt, gitGraph, journey, requirementDiagram, link, style, class, click, callback
+- SPECIFIC FORBIDDEN IDS:
+    - "session" (Reserved in Gantt/Journey) -> Use "sess", "user_session", or "mySession"
+    - "box"/"Box"/"BOX" (Reserved in Sequence, case-insensitive) -> Use "device", "target", "node", "unit"
+    - CRITICAL: ANY string containing "box" (e.g., "GPUBox", "mbox", "sandbox") will be tokenized as "box" and fail. Do NOT use any ID containing "box" in any case
+    - "struct" (Not a valid Mermaid keyword) -> ALWAYS use "class" to define structures
+    - "create", "destroy", "activate", "deactivate" (Reserved in Sequence)
+
+**4. 特殊字符与文本安全**
+- ALWAYS wrap Node Labels in double quotes if they contain: parentheses \`()\`, brackets \`[]\`, HTML tags \`<br/>\`, special symbols \`+, -, *, /\`
+- Use \`ID["read()"]\` instead of \`ID[read()]\`, use \`TM["Timer<br/>1s"]\` instead of \`TM[Timer<br/>1s]\`
+
+**5. 图表特定语法规则(CRITICAL)**
+- CLASS DIAGRAM: When defining Stereotypes (like enumeration, interface), place <<Type>> INSIDE the class block, NOT after the "class" keyword.
+  - Correct: class MyClass { <<enumeration>> +Value }
+  - Wrong: class <<enumeration>> MyClass { ... }
+
+- CRITICAL: Mermaid does NOT support \`struct\` keyword. NEVER use \`struct\` in any diagram. ALWAYS use \`class\` instead.
+    - WRONG: \`struct IpmiMsgReq { +netfn: uint8_t }\`
+    - CORRECT: \`class IpmiMsgReq { +netfn: uint8_t }\`
+    - This applies to ALL struct-like types: C structs, data classes, DTOs, value objects, etc.
+- STEREOTYPE PLACEMENT: When defining Stereotypes (like enumeration, interface), place \`<<Type>>\` INSIDE the class block, on the first line.
+    - Wrong: \`class <<enumeration>> session { ... }\`
+    - Correct: \`class session { <<enumeration>> ... }\`
+- NAMESPACE SYNTAX: Ensure \`namespace\` wraps the classes correctly.
+    - Syntax: \`namespace Name { class MyClass { ... } }\`
+    - Do NOT nest namespaces inside other namespaces in a classDiagram
+    - Do NOT reference types with \`::\` (e.g., \`std::string\`). Use simple names like \`stdString\`
+
+**6. 通用防错**
+- Use quotes around labels that contain special characters: \`participant Main as "主函数(ByteD03BMCMain)"\` or \`participant Main["ByteD03BMCMain"]\`
+- Avoid using parentheses () in participant labels without proper escaping
+- When using flowcharts, always quote node labels that contain function names: \`A["functionName()"]\`
+- CRITICAL: Always quote node labels that contain square brackets \`[]\`, brackets \`()\`, angle brackets \`<>\`, or curly braces \`{}\`: use \`A["array[index]"]\` instead of \`A[array[index]]\`, use \`A["function()"]\` instead of \`A[function()]\`, use \`A["GET /path/{id}"]\` instead of \`A[GET /path/{id}]\`
+- CRITICAL: Do NOT use non-standard diagram types like \`flashmap\`. Use only standard mermaid diagram types: \`graph\`, \`flowchart\`, \`sequenceDiagram\`, \`classDiagram\`, \`stateDiagram-v2\`, \`erDiagram\`, \`pie\`, \`gantt\`, \`gitGraph\`, \`requirementDiagram\`, or \`journey\`. For memory/flash layout visualizations, use \`graph TB\` or \`flowchart TB\`
+- Message text can be in Chinese but avoid colons in message text
+- CRITICAL: Do NOT use participant names that are mermaid keywords (create, loop, alt, else, opt, par, break, critical, section, exclude, optional, iteractor). For example, instead of \`Create->>Create\`, use \`Creator->>Creator\` or \`ThreadCreate->>ThreadCreate\` (avoid "Create" as participant name)
+- CRITICAL: In classDiagram, do NOT use \`::\` in relationship targets. Use simple identifiers: \`A ..> B\` not \`A ..> sdbusplus::asio::connection\`. Use \`A ..> SdbusConnection\` or put the dependency label as text
+- Note syntax: Use \`Note right of A\` or \`Note left of A\`, NOT \`Note over A,B,C\` with commas. For multiple participants, use separate Note statements`;
 
 export const OVERVIEW_USER_PROMPT = `Write the overview page for this repository's wiki.
 
@@ -149,7 +311,16 @@ Key system flows: {{TOP_PROCESSES}}
 
 ---
 
-Write a clear overview of this project: what it does, how it's architected, and the key end-to-end flows. Include a simple Mermaid architecture diagram (max 10 nodes, big-picture only). Link to module pages (e.g. \`[模块名称](module-slug.md)\`) naturally in the text rather than listing them in a table. If project config was provided, include brief setup instructions. Structure the page however reads best.`;
+Write a clear overview of this project: what it does, how it's architected, and the key end-to-end flows. Include a simple Mermaid architecture diagram (max 10 nodes, big-picture only). Link to module pages (e.g. \`[模块名称](module-slug.md)\`) naturally in the text rather than listing them in a table. If project config was provided, include brief setup instructions. Structure the page however reads best.
+
+Mermaid Rules Reminder:
+**[CRITICAL - VIOLATIONS WILL BREAK RENDERING]**
+1. subgraph ID and node IDs inside it must be DIFFERENT: if you write \`subgraph test\`, never use \`test\` as a node ID inside
+2. Do NOT nest namespaces in classDiagram (namespace cannot contain another namespace)
+3. NEVER use "struct" - always use "class"
+4. Do NOT use "box" in any form (Box, GPUBox, etc.) - reserved keyword
+5. Note syntax: \`Note right of A\` NOT \`Note over A,B,C\` with commas
+6. Do NOT use "::" in classDiagram relationship targets`;
 
 // ─── Template Substitution Helper ─────────────────────────────────────
 
@@ -246,3 +417,36 @@ function shortPath(fp: string): string {
   const parts = fp.replace(/\\/g, '/').split('/');
   return parts.length > 3 ? parts.slice(-3).join('/') : fp;
 }
+
+// ─── Function Documentation Prompt ─────────────────────────────────────
+
+export const FUNCTION_DOC_SYSTEM_PROMPT = `You are a technical documentation writer. Write documentation for a single function that has been modified or newly added.
+
+Rules:
+- Output ONLY the section content — no meta-commentary like "I've written...", "Here is the documentation...", or similar
+- Start directly with the section title using ## prefix (e.g., ## functionName())
+- Write concise but complete documentation covering:
+  - What the function does
+  - Its parameters and return value
+  - Any important implementation details or edge cases
+  - If it's a modified function, briefly note what changed
+- Include a simple code example only if it significantly clarifies usage
+- Write all documentation content in Chinese (中文)
+- Keep the documentation focused — this is an incremental update, not a full rewrite
+- The section title should be: ## functionName()`;
+
+export const FUNCTION_DOC_USER_PROMPT = `Write documentation for the function **{{FUNCTION_NAME}}**.
+
+## Function Signature
+
+\`\`\`
+{{FUNCTION_SIGNATURE}}
+\`\`\`
+
+## Source Code
+
+{{SOURCE_CODE}}
+
+---
+
+Write a documentation section for this function. Use the title "## {{FUNCTION_NAME}}()". Focus on what changed or what this function does. Keep it concise but complete.`;
