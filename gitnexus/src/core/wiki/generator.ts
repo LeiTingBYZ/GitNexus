@@ -824,18 +824,32 @@ export class WikiGenerator {
       ];
     }
 
+    // Analyze file paths to find common prefix and usable depth
+    const fileDepths = files.map((f) => f.replace(/\\/g, '/').split('/').length);
+    const minFileDepth = Math.min(...fileDepths);
+    const maxFileDepth = Math.max(...fileDepths);
+
+    // If all files share the same top-level directory and same depth,
+    // they are likely in a flat structure - don't split by subdirectory
+    const topLevelDirs = new Set(files.map((f) => f.replace(/\\/g, '/').split('/')[0]));
+    const allSameTopDir = topLevelDirs.size === 1;
+    const allSameDepth = maxFileDepth === minFileDepth;
+
     // Try different depth levels to find the best grouping
     const results: Map<string, string[]>[] = [];
-    const minDepth = 2;
-    const maxDepth = Math.min(
-      6,
-      Math.min(...files.map((f) => f.replace(/\\/g, '/').split('/').length)),
-    );
+
+    // Dynamically calculate depth range based on actual file paths
+    const minDepth = 1;
+    // Use the shallowest file depth as max to ensure all files can be grouped
+    // Cap at 6 to avoid over-nesting, min at 3 to avoid too shallow
+    const maxDepth = Math.max(3, Math.min(6, minFileDepth));
 
     for (let depth = minDepth; depth <= maxDepth; depth++) {
       const subGroups = new Map<string, string[]>();
       for (const fp of files) {
         const parts = fp.replace(/\\/g, '/').split('/');
+        // Skip files shorter than the requested depth
+        if (parts.length < depth) continue;
         const subDir = parts.slice(0, depth).join('/');
         if (!subGroups.has(subDir)) {
           subGroups.set(subDir, []);
@@ -848,18 +862,30 @@ export class WikiGenerator {
     // Score each grouping: prefer more groups with balanced file distribution
     let bestGroups: Map<string, string[]> | null = null;
     let bestScore = -1;
+    const MIN_FILES_PER_GROUP = 3; // Minimum files per group to be considered valid
 
     for (const groups of results) {
       const groupCount = groups.size;
       if (groupCount < 2) continue; // Need at least 2 groups
 
-      // Calculate balance: variance of group sizes (lower is better)
+      // Check if all groups have minimum files
       const sizes = Array.from(groups.values()).map((g) => g.length);
+      const minGroupSize = Math.min(...sizes);
+
+      // Skip if any group has too few files (prevents one-file modules)
+      // Exception: if all files are in the same directory, we shouldn't split at all
+      if (minGroupSize < MIN_FILES_PER_GROUP) {
+        // For flat structures, prefer not splitting over tiny groups
+        if (allSameTopDir && allSameDepth) continue;
+        // For mixed structures, still require minimum files per group
+        if (!allSameTopDir) continue;
+      }
+
+      // Calculate balance: variance of group sizes (lower is better)
       const avgSize = sizes.reduce((a, b) => a + b, 0) / sizes.length;
       const variance = sizes.reduce((sum, s) => sum + Math.pow(s - avgSize, 2), 0) / sizes.length;
 
       // Score: more groups is better, lower variance is better
-      // Normalize variance relative to average size
       const normalizedVariance = avgSize > 0 ? variance / (avgSize * avgSize) : 0;
       const score = groupCount / (1 + normalizedVariance);
 
@@ -869,9 +895,16 @@ export class WikiGenerator {
       }
     }
 
-    // If no good grouping found at deeper levels, use simple top-level directory grouping
-    if (!bestGroups) {
-      return this.splitBySubdirectorySimple(moduleName, files);
+    // If only one group found (all files in same directory), don't split
+    if (!bestGroups || bestGroups.size <= 1) {
+      // All files are in the same directory - no meaningful split possible
+      return [
+        {
+          name: moduleName,
+          slug: this.slugify(moduleName),
+          files,
+        },
+      ];
     }
 
     // Check if basenames are unique; if not, use the full subDir path
@@ -890,18 +923,30 @@ export class WikiGenerator {
 
   /**
    * Simple subdirectory splitting (fallback).
+   * Uses top-level directory for grouping.
    */
   private splitBySubdirectorySimple(moduleName: string, files: string[]): ModuleTreeNode[] {
     const subGroups = new Map<string, string[]>();
     for (const fp of files) {
       const parts = fp.replace(/\\/g, '/').split('/');
-      const subDir = parts.length > 2 ? parts.slice(0, 2).join('/') : parts[0];
+      const subDir = parts.length > 1 ? parts[0] : 'Root';
       let group = subGroups.get(subDir);
       if (!group) {
         group = [];
         subGroups.set(subDir, group);
       }
       group.push(fp);
+    }
+
+    // If only one group (all files in same directory), don't split
+    if (subGroups.size <= 1) {
+      return [
+        {
+          name: moduleName,
+          slug: this.slugify(moduleName),
+          files,
+        },
+      ];
     }
 
     // Check if basenames are unique; if not, use the full subDir path
