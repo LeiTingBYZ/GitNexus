@@ -33,6 +33,8 @@ export interface WikiCommandOptions {
   verbose?: boolean;
   review?: boolean;
   format?: 'html' | 'markdown';
+  increment?: boolean;
+  fromCommit?: string;
 }
 
 /**
@@ -384,6 +386,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     concurrency: options?.concurrency ? parseInt(options.concurrency, 10) : undefined,
     reviewOnly: options?.review,
     format: options?.format,
+    increment: options?.increment,
   };
 
   const generator = new WikiGenerator(

@@ -57,6 +57,11 @@ import {
 
 import { shouldIgnorePath } from '../../config/ignore-service.js';
 
+import {
+  runIncrementalUpdate as runFunctionIncrementalUpdate,
+  type IncrementalUpdateOptions,
+} from './incremental.js';
+
 // ─── Types ────────────────────────────────────────────────────────────
 
 export interface WikiOptions {
@@ -67,6 +72,8 @@ export interface WikiOptions {
   reviewOnly?: boolean;
   /** Output format: 'html' (interactive), 'markdown' (git-friendly), or 'both' (default) */
   format?: 'html' | 'markdown' | 'both';
+  /** If true, only update changed modules and functions (based on git diff) */
+  increment?: boolean;
 }
 
 export interface WikiMeta {
@@ -103,8 +110,20 @@ const WIKI_DIR = 'wiki';
  * Handles both <thinking>...</thinking> and similar patterns that MiniMax models use.
  */
 function cleanLLMContent(content: string): string {
-  // Remove <think...>...</think...> tags (handles <thinking>, <think>, etc.)
-  let cleaned = content.replace(/<think[\s\S]*?>[\s\S]*?<\/think[\s\S]*?>/gi, '');
+  // Remove thinking/reasoning tags (various formats from different models)
+  let cleaned = content
+    // Remove <think>...</think> and variants
+    .replace(/<think[\s\S]*?>[\s\S]*?<\/think[\s\S]*?>/gi, '')
+    // Remove <think>...</think> (Claude format)
+    .replace(/<think>[\s\S]*?<\/planning>/gi, '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    // Remove <think>...</think> (plain)
+    .replace(/<think>[\s\S]*?<\/planning>/gi, '')
+    // Remove other tags
+    .replace(/<ooc>[\s\S]*?<\/ooc>/gi, '')
+    .replace(/<response>[\s\S]*?<\/response>/gi, '')
+    // Remove <thinking>...</thinking>
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
 
   // Also remove content between Chinese full-width brackets if present
   cleaned = cleaned.replace(/【 thinking 】[\s\S]*?【\/ thinking 】/gi, '');
@@ -224,8 +243,13 @@ export class WikiGenerator {
     const currentCommit = this.getCurrentCommit();
     const forceMode = this.options.force;
 
-    // Up-to-date check (skip if --force)
-    if (!forceMode && existingMeta && existingMeta.fromCommit === currentCommit) {
+    // Up-to-date check (skip if --force or --increment)
+    if (
+      !forceMode &&
+      !this.options.increment &&
+      existingMeta &&
+      existingMeta.fromCommit === currentCommit
+    ) {
       // Still regenerate the HTML viewer in case it's missing
       await this.ensureHTMLViewer();
       return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
@@ -445,9 +469,28 @@ export class WikiGenerator {
     await this.generateOverview(moduleTree);
     pagesGenerated++;
 
+    // Phase 4: Generate function documentation (always included in full generation)
+    this.onProgress('functions', 90, 'Generating function documentation...');
+    await initWikiDb(this.lbugPath);
+
+    const moduleFiles = this.extractModuleFiles(moduleTree);
+    const functionUpdateOptions: IncrementalUpdateOptions = {
+      repoPath: this.repoPath,
+      wikiDir: this.wikiDir,
+      moduleFiles,
+      fromCommit: currentCommit,
+      toCommit: currentCommit,
+      llmConfig: this.llmConfig,
+      onProgress: this.onProgress,
+      rebuildAll: true, // Full rebuild for initial generation
+    };
+
+    const { results: funcResults } = await runFunctionIncrementalUpdate(functionUpdateOptions);
+    const funcPagesGenerated = funcResults.reduce((sum, r) => sum + r.functionsAdded, 0);
+    pagesGenerated += funcPagesGenerated;
+
     // Save metadata
     this.onProgress('finalize', 95, 'Saving metadata...');
-    const moduleFiles = this.extractModuleFiles(moduleTree);
     await this.saveModuleTree(moduleTree);
     await this.saveWikiMeta({
       fromCommit: currentCommit,
@@ -1111,8 +1154,8 @@ export class WikiGenerator {
   // ─── Phase 3: Generate Overview ─────────────────────────────────────
 
   private async generateOverview(moduleTree: ModuleTreeNode[]): Promise<void> {
-    // Touch DB before starting to prevent timeout
-    touchWikiDb();
+    // Re-initialize DB to ensure connection is valid
+    await initWikiDb(this.lbugPath);
 
     // Read module overview sections
     const moduleSummaries: string[] = [];
@@ -1193,23 +1236,31 @@ export class WikiGenerator {
       return { pagesGenerated: 0, mode: 'incremental', failedModules: [] };
     }
 
-    this.onProgress('incremental', 10, `${changedFiles.length} files changed`);
-
     // Determine affected modules
     const affectedModules = new Set<string>();
     const newFiles: string[] = [];
 
-    for (const fp of changedFiles) {
-      let found = false;
-      for (const [mod, files] of Object.entries(existingMeta.moduleFiles)) {
-        if (files.includes(fp)) {
-          affectedModules.add(mod);
-          found = true;
-          break;
-        }
+    if (!this.options.increment) {
+      // Full rebuild: all modules are affected
+      const moduleTree = existingMeta.moduleTree;
+      for (const node of moduleTree) {
+        affectedModules.add(node.name);
       }
-      if (!found && !shouldIgnorePath(fp)) {
-        newFiles.push(fp);
+    } else {
+      this.onProgress('incremental', 10, `${changedFiles.length} files changed`);
+
+      for (const fp of changedFiles) {
+        let found = false;
+        for (const [mod, files] of Object.entries(existingMeta.moduleFiles)) {
+          if (files.includes(fp)) {
+            affectedModules.add(mod);
+            found = true;
+            break;
+          }
+        }
+        if (!found && !shouldIgnorePath(fp)) {
+          newFiles.push(fp);
+        }
       }
     }
 
@@ -1237,9 +1288,99 @@ export class WikiGenerator {
       affectedModules.add('Other');
     }
 
-    // Regenerate affected module pages (parallel)
-    let pagesGenerated = 0;
     const moduleTree = existingMeta.moduleTree;
+
+    // Files to process (all files for full rebuild, or just changed files for increment)
+    const filesToProcess = !this.options.increment
+      ? Object.values(existingMeta.moduleFiles).flat()
+      : changedFiles;
+
+    // Always use function-level incremental update
+    return this.incrementalFunctionUpdate(
+      existingMeta,
+      currentCommit,
+      moduleTree,
+      affectedModules,
+      filesToProcess,
+    );
+  }
+
+  /**
+   * Function-level incremental update: update changed or all functions based on options.
+   */
+  private async incrementalFunctionUpdate(
+    existingMeta: WikiMeta,
+    currentCommit: string,
+    moduleTree: ModuleTreeNode[],
+    affectedModules: Set<string>,
+    changedFiles: string[],
+  ): Promise<WikiRunResult> {
+    this.onProgress('incremental', 15, 'Generating function documentation...');
+
+    // Initialize LadybugDB for overview generation
+    await initWikiDb(this.lbugPath);
+
+    const moduleFiles = this.extractModuleFiles(moduleTree);
+
+    // rebuildAll: true for full rebuild (no --increment flag), false for incremental
+    const options: IncrementalUpdateOptions = {
+      repoPath: this.repoPath,
+      wikiDir: this.wikiDir,
+      moduleFiles,
+      fromCommit: existingMeta.fromCommit,
+      toCommit: currentCommit,
+      llmConfig: this.llmConfig,
+      onProgress: this.onProgress,
+      rebuildAll: !this.options.increment,
+    };
+
+    const { updatedModules, results, isDivergent } = await runFunctionIncrementalUpdate(options);
+
+    for (const result of results) {
+      for (const error of result.errors) {
+        console.error(`[ERROR] ${result.filePath}: ${error}`);
+      }
+    }
+
+    if (isDivergent) {
+      this.onProgress('incremental', 5, 'Note: branches diverged, synced to merge base');
+    }
+
+    const totalUpdated = results.reduce((sum, r) => sum + r.functionsUpdated, 0);
+    const totalAdded = results.reduce((sum, r) => sum + r.functionsAdded, 0);
+    const pagesGenerated = totalUpdated + totalAdded;
+
+    if (pagesGenerated > 0) {
+      this.onProgress('incremental', 90, 'Updating overview...');
+      await this.generateOverview(moduleTree);
+    }
+
+    this.onProgress('incremental', 95, 'Saving metadata...');
+    await this.saveWikiMeta({
+      ...existingMeta,
+      fromCommit: currentCommit,
+      generatedAt: new Date().toISOString(),
+      model: this.llmConfig.model,
+    });
+
+    this.onProgress('done', 100, `Function-level update: ${pagesGenerated} functions`);
+    return {
+      pagesGenerated,
+      mode: 'incremental',
+      failedModules: [],
+    };
+  }
+
+  /**
+   * Module-level incremental update: re-generate entire affected modules.
+   */
+  private async incrementalModuleUpdate(
+    existingMeta: WikiMeta,
+    currentCommit: string,
+    moduleTree: ModuleTreeNode[],
+    affectedModules: Set<string>,
+  ): Promise<WikiRunResult> {
+    let pagesGenerated = 0;
     const affectedArray = Array.from(affectedModules);
 
     this.onProgress('incremental', 20, `Regenerating ${affectedArray.length} module(s)...`);
@@ -1279,14 +1420,12 @@ export class WikiGenerator {
       }
     });
 
-    // Regenerate overview if any pages changed
     if (pagesGenerated > 0) {
       this.onProgress('incremental', 85, 'Updating overview...');
       await this.generateOverview(moduleTree);
       pagesGenerated++;
     }
 
-    // Save updated metadata
     this.onProgress('incremental', 95, 'Saving metadata...');
     await this.saveWikiMeta({
       ...existingMeta,

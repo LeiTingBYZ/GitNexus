@@ -96,6 +96,8 @@ program
   .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
   .option('--review', 'Stop after grouping to review module structure before generating pages')
   .option('--format <type>', 'Output format: both (default), html, or markdown')
+  .option('--increment', 'Incremental update: only update changed modules and functions')
+  .option('--from-commit <sha>', 'Start diff from this commit (default: wiki meta.fromCommit)')
   .action(createLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program
